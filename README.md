@@ -97,4 +97,42 @@ select id, telegram_user_id, name, created_at, updated_at from users;
 ```
 
 The table should contain a row with your Telegram user id.
+
+## Bootstrap Financial Data
+
+Create a private bootstrap file from the example:
+
+```bash
+cp config/bootstrap.example.yaml config/private/bootstrap.yaml
+```
+
+Edit `config/private/bootstrap.yaml` and replace `owner.telegram_user_id` with
+your Telegram user id. Keep this file private; `config/private/*.yaml` is
+ignored by Git.
+
+Load the bootstrap data:
+
+```bash
+.venv/bin/python scripts/load_bootstrap.py --file config/private/bootstrap.yaml
+```
+
+The loader creates or finds the user, creates or updates the financial profile,
+and inserts recurring rules without duplicating identical rules on repeated
+runs.
+
+Check the loaded data in PostgreSQL:
+
+```bash
+docker compose exec db psql -U ai_accountant -d ai_accountant
+```
+
+```sql
+select id, user_id, opening_balance, currency, opening_balance_date
+from financial_profiles;
+
+select id, user_id, type, amount, currency, category, description,
+       frequency, day_of_month, active
+from recurring_rules
+order by user_id, type, day_of_month;
+```
 # ai_accountant_bot
