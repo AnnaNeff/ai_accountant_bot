@@ -11,4 +11,4 @@ dist/
 build/
 *.egg-info/
 data/private/
-config/private/
+config/private/*.yaml

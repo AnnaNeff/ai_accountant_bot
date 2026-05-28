@@ -1,0 +1,31 @@
+owner:
+  telegram_user_id: 123456789
+  name: "Anna"
+
+financial_profile:
+  opening_balance: 10000.00
+  currency: "ILS"
+  opening_balance_date: "2026-05-01"
+
+regular_income:
+  - description: "Client payment"
+    amount: 3000.00
+    currency: "ILS"
+    frequency: "monthly"
+    day_of_month: 10
+    category: "services"
+
+regular_expenses:
+  - description: "Rent"
+    amount: 4500.00
+    currency: "ILS"
+    frequency: "monthly"
+    day_of_month: 1
+    category: "rent"
+
+  - description: "Loan payment"
+    amount: 1200.00
+    currency: "ILS"
+    frequency: "monthly"
+    day_of_month: 15
+    category: "loan"
