@@ -136,7 +136,7 @@ ALLOWED_TELEGRAM_USER_IDS=123456789
 Нельзя хранить в коде:
 
 - Telegram bot token;
-- OpenAI API key;
+- Groq API key;
 - пароли к базе;
 - ключи шифрования.
 

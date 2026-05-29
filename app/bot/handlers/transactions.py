@@ -6,7 +6,6 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app.db.session import async_session_factory
 from app.models.transaction import Transaction
 from app.schemas.transaction import TransactionCreate
 from app.services.transaction_service import create_transaction, get_last_transactions
@@ -15,6 +14,12 @@ from app.services.user_service import get_or_create_user
 router = Router(name="transactions")
 
 TransactionType = Literal["income", "expense"]
+
+
+def get_async_session_factory():
+    from app.db.session import async_session_factory
+
+    return async_session_factory
 
 
 def parse_transaction_command(
@@ -72,7 +77,8 @@ async def save_transaction(
         await message.answer(data)
         return
 
-    async with async_session_factory() as session:
+    session_factory = get_async_session_factory()
+    async with session_factory() as session:
         user = await get_or_create_user(
             session=session,
             telegram_user_id=message.from_user.id,
@@ -101,7 +107,8 @@ async def handle_last(message: Message) -> None:
     if message.from_user is None:
         return
 
-    async with async_session_factory() as session:
+    session_factory = get_async_session_factory()
+    async with session_factory() as session:
         user = await get_or_create_user(
             session=session,
             telegram_user_id=message.from_user.id,

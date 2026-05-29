@@ -11,6 +11,8 @@ class Settings(BaseSettings):
         alias="ALLOWED_TELEGRAM_USER_IDS",
     )
     database_url: str = Field(alias="DATABASE_URL")
+    groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
+    groq_model: str = Field(default="llama-3.1-8b-instant", alias="GROQ_MODEL")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     model_config = SettingsConfigDict(
@@ -28,6 +30,13 @@ class Settings(BaseSettings):
             return [value]
         if isinstance(value, str):
             return [int(item.strip()) for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("groq_api_key", mode="before")
+    @classmethod
+    def normalize_groq_api_key(cls, value: object) -> str | None | object:
+        if value == "":
+            return None
         return value
 
 

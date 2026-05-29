@@ -38,6 +38,7 @@ Ensure the local `.env` contains:
 - `ALLOWED_TELEGRAM_USER_IDS` with one or more comma-separated Telegram user
   ids allowed to access the bot.
 - `DATABASE_URL` using the async PostgreSQL driver.
+- `GROQ_API_KEY` with the API key used for AI features.
 - `LOG_LEVEL` if a non-default log level is needed.
 
 Start PostgreSQL:

@@ -17,5 +17,6 @@ async def handle_help(message: Message) -> None:
         "/generate_recurring\n"
         "/income amount description\n"
         "/expense amount description\n"
+        "/ai_parse text\n"
         "/last"
     )
