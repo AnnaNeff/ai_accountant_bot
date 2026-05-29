@@ -9,6 +9,8 @@ async def create_transaction(
     session: AsyncSession,
     user_id: int,
     data: TransactionCreate,
+    source: str = "manual",
+    status: str = "confirmed",
 ) -> Transaction:
     transaction = Transaction(
         user_id=user_id,
@@ -18,8 +20,8 @@ async def create_transaction(
         date=data.date,
         category=data.category,
         description=data.description,
-        source="manual",
-        status="confirmed",
+        source=source,
+        status=status,
     )
     session.add(transaction)
     await session.commit()

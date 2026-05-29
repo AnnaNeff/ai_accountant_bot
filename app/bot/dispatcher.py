@@ -1,4 +1,5 @@
 from aiogram import Bot, Dispatcher
+from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.bot.handlers.ai_parse import router as ai_parse_router
 from app.bot.handlers.balance import router as balance_router
@@ -13,7 +14,7 @@ from app.core.config import Settings
 
 def create_bot_and_dispatcher(settings: Settings) -> tuple[Bot, Dispatcher]:
     bot = Bot(token=settings.telegram_bot_token)
-    dispatcher = Dispatcher()
+    dispatcher = Dispatcher(storage=MemoryStorage())
 
     dispatcher.message.middleware(AccessMiddleware())
     dispatcher.callback_query.middleware(AccessMiddleware())

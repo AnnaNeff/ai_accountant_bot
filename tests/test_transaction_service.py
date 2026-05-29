@@ -68,6 +68,25 @@ def test_create_transaction_sets_manual_defaults() -> None:
     assert transaction.status == "confirmed"
 
 
+def test_create_transaction_accepts_custom_source() -> None:
+    session = FakeSession()
+    data = TransactionCreate(
+        type="income",
+        amount=Decimal("1500"),
+        date=date(2026, 5, 28),
+        description="consulting",
+    )
+
+    transaction = asyncio.run(
+        create_transaction(
+            session, 7, data, source="ai_text", status="confirmed"  # type: ignore[arg-type]
+        )
+    )
+
+    assert transaction.source == "ai_text"
+    assert transaction.status == "confirmed"
+
+
 def test_get_last_transactions_caps_limit_and_orders_results() -> None:
     transactions = [Transaction(user_id=3, type="income", amount=Decimal("1"), date=date(2026, 5, 27))]
     session = FakeSession(transactions)
