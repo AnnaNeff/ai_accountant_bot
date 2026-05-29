@@ -15,6 +15,7 @@ async def handle_help(message: Message) -> None:
         "/balance\n"
         "/recurring\n"
         "/generate_recurring\n"
+        "/documents\n"
         "/income amount description\n"
         "/expense amount description\n"
         "/ai_parse text\n"

@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     groq_api_key: str | None = Field(default=None, alias="GROQ_API_KEY")
     groq_model: str = Field(default="llama-3.1-8b-instant", alias="GROQ_MODEL")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    document_storage_path: str = Field(
+        default="data/private/documents",
+        alias="DOCUMENT_STORAGE_PATH",
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",

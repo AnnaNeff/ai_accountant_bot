@@ -14,6 +14,7 @@ def test_settings_parses_allowed_user_ids() -> None:
     assert settings.groq_api_key == "test-ai-key"
     assert settings.groq_model == "llama-3.1-8b-instant"
     assert settings.log_level == "DEBUG"
+    assert settings.document_storage_path == "data/private/documents"
 
 
 def test_settings_accepts_groq_model_override() -> None:
