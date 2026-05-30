@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -92,6 +94,32 @@ async def unlink_document_from_transaction(
         return None
 
     document.transaction_id = None
+    await session.commit()
+    await session.refresh(document)
+    return document
+
+
+async def save_document_ocr_result(
+    session: AsyncSession,
+    user_id: int,
+    document_id: int,
+    ocr_text: str,
+    success: bool,
+    error_message: str | None = None,
+) -> Document | None:
+    document = await get_document_by_id(session, user_id, document_id)
+    if document is None:
+        return None
+
+    if success:
+        document.ocr_text = ocr_text
+        document.ocr_status = "completed"
+        document.ocr_error = None
+    else:
+        document.ocr_status = "failed"
+        document.ocr_error = error_message
+
+    document.ocr_processed_at = datetime.now(timezone.utc)
     await session.commit()
     await session.refresh(document)
     return document

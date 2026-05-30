@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -30,6 +30,17 @@ class Document(Base):
         server_default="uploaded",
         nullable=False,
         index=True,
+    )
+    ocr_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ocr_status: Mapped[str] = mapped_column(
+        String(20),
+        server_default="not_started",
+        nullable=False,
+    )
+    ocr_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ocr_processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

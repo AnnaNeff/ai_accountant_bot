@@ -10,5 +10,18 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  bot:
+    build: .
+    depends_on:
+      - db
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://ai_accountant:${POSTGRES_PASSWORD:-ai_accountant}@db:5432/ai_accountant
+      DOCUMENT_STORAGE_PATH: data/private/documents
+    volumes:
+      - ./data/private/documents:/app/data/private/documents
+    restart: "no"
+
 volumes:
   postgres_data:

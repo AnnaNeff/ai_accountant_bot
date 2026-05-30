@@ -17,6 +17,7 @@ async def handle_help(message: Message) -> None:
         "/generate_recurring\n"
         "/documents\n"
         "/document document_id\n"
+        "/ocr_document document_id\n"
         "/link_document document_id transaction_id\n"
         "/unlink_document document_id\n"
         "/income amount description\n"

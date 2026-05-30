@@ -117,7 +117,7 @@ def test_photo_handler_creates_document(
         "Document saved.\n\n"
         "ID: 123\n"
         "Status: uploaded\n\n"
-        "OCR is not implemented yet."
+        "OCR is available. Use /ocr_document <document_id> to extract text."
     ]
 
 
@@ -180,12 +180,14 @@ def test_handle_documents_shows_last_documents(monkeypatch: pytest.MonkeyPatch) 
             SimpleNamespace(
                 id=12,
                 status="uploaded",
+                ocr_status="completed",
                 transaction_id=45,
                 created_at=datetime(2026, 5, 30),
             ),
             SimpleNamespace(
                 id=11,
                 status="uploaded",
+                ocr_status="not_started",
                 transaction_id=None,
                 created_at=datetime(2026, 5, 29),
             ),
@@ -203,8 +205,8 @@ def test_handle_documents_shows_last_documents(monkeypatch: pytest.MonkeyPatch) 
 
     assert message.answers == [
         "Documents:\n\n"
-        "1. ID 12 | uploaded | transaction 45 | 2026-05-30\n"
-        "2. ID 11 | uploaded | not linked | 2026-05-29"
+        "1. ID 12 | uploaded | OCR completed | transaction 45 | 2026-05-30\n"
+        "2. ID 11 | uploaded | OCR not_started | not linked | 2026-05-29"
     ]
 
 
@@ -224,6 +226,9 @@ def test_handle_document_shows_details(monkeypatch: pytest.MonkeyPatch) -> None:
         return SimpleNamespace(
             id=12,
             status="uploaded",
+            ocr_status="completed",
+            ocr_processed_at=datetime(2026, 5, 30, 12, 0),
+            ocr_text="Super-Pharm\n86.40 ILS",
             transaction_id=None,
             created_at=datetime(2026, 5, 30),
             file_size_bytes=123456,
@@ -243,10 +248,265 @@ def test_handle_document_shows_details(monkeypatch: pytest.MonkeyPatch) -> None:
         "Document details:\n\n"
         "ID: 12\n"
         "Status: uploaded\n"
+        "OCR status: completed\n"
+        "OCR processed at: 2026-05-30T12:00:00\n"
         "Created at: 2026-05-30\n"
         "Transaction ID: not linked\n"
-        "File size: 123456 bytes"
+        "File size: 123456 bytes\n\n"
+        "OCR text preview:\n"
+        "Super-Pharm\n"
+        "86.40 ILS"
     ]
+
+
+def test_handle_ocr_document_validates_format() -> None:
+    message = FakeMessage(text="/ocr_document")
+
+    asyncio.run(documents.handle_ocr_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == ["Use format: /ocr_document 12"]
+
+
+def test_handle_ocr_document_shows_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    message = FakeMessage(text="/ocr_document 12")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(
+        session: object,
+        user_id: int,
+        document_id: int,
+    ) -> None:
+        assert user_id == 7
+        assert document_id == 12
+        return None
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_settings", lambda: SimpleNamespace(ocr_languages="eng"))
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+
+    asyncio.run(documents.handle_ocr_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == ["Document not found."]
+
+
+def test_handle_ocr_document_saves_successful_ocr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "receipt.jpg"
+    image_path.write_bytes(b"fake-image")
+    message = FakeMessage(text="/ocr_document 12")
+    saved: dict[str, Any] = {}
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(
+        session: object,
+        user_id: int,
+        document_id: int,
+    ) -> Any:
+        return SimpleNamespace(id=document_id, user_id=user_id, local_path=str(image_path))
+
+    def fake_extract_text_from_image(path: Path, languages: str) -> str:
+        assert path == image_path
+        assert languages == "eng"
+        return "Super-Pharm\n86.40 ILS"
+
+    async def fake_save_document_ocr_result(**kwargs: Any) -> Any:
+        saved.update(kwargs)
+        return SimpleNamespace(id=kwargs["document_id"], ocr_status="completed")
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_settings", lambda: SimpleNamespace(ocr_languages="eng"))
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "extract_text_from_image", fake_extract_text_from_image)
+    monkeypatch.setattr(documents, "save_document_ocr_result", fake_save_document_ocr_result)
+
+    asyncio.run(documents.handle_ocr_document(message))  # type: ignore[arg-type]
+
+    assert saved["user_id"] == 7
+    assert saved["document_id"] == 12
+    assert saved["ocr_text"] == "Super-Pharm\n86.40 ILS"
+    assert saved["success"] is True
+    assert message.answers == [
+        "OCR completed.\n\n"
+        "Document ID: 12\n\n"
+        "Recognized text:\n"
+        "Super-Pharm\n"
+        "86.40 ILS"
+    ]
+
+
+def test_handle_ocr_document_empty_text_message(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "receipt.jpg"
+    image_path.write_bytes(b"fake-image")
+    message = FakeMessage(text="/ocr_document 12")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=12, local_path=str(image_path))
+
+    async def fake_save_document_ocr_result(**kwargs: Any) -> Any:
+        assert kwargs["ocr_text"] == ""
+        assert kwargs["success"] is True
+        return SimpleNamespace(id=12, ocr_status="completed")
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_settings", lambda: SimpleNamespace(ocr_languages="eng"))
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "extract_text_from_image", lambda path, languages: "")
+    monkeypatch.setattr(documents, "save_document_ocr_result", fake_save_document_ocr_result)
+
+    asyncio.run(documents.handle_ocr_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == [
+        "OCR completed, but no text was recognized.\n\n"
+        "Document ID: 12"
+    ]
+
+
+def test_handle_ocr_document_exception_saves_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "receipt.jpg"
+    image_path.write_bytes(b"fake-image")
+    message = FakeMessage(text="/ocr_document 12")
+    saved: dict[str, Any] = {}
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=12, local_path=str(image_path))
+
+    def fail_extract_text_from_image(path: Path, languages: str) -> str:
+        raise RuntimeError("tesseract failed")
+
+    async def fake_save_document_ocr_result(**kwargs: Any) -> Any:
+        saved.update(kwargs)
+        return SimpleNamespace(id=12, ocr_status="failed")
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_settings", lambda: SimpleNamespace(ocr_languages="eng"))
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "extract_text_from_image", fail_extract_text_from_image)
+    monkeypatch.setattr(documents, "save_document_ocr_result", fake_save_document_ocr_result)
+
+    asyncio.run(documents.handle_ocr_document(message))  # type: ignore[arg-type]
+
+    assert saved["success"] is False
+    assert saved["ocr_text"] == ""
+    assert saved["error_message"] == "tesseract failed"
+    assert message.answers == ["OCR failed. Please check the document image and OCR setup."]
+
+
+def test_handle_ocr_document_missing_file_saves_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    missing_path = tmp_path / "missing.jpg"
+    message = FakeMessage(text="/ocr_document 12")
+    saved: dict[str, Any] = {}
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=12, local_path=str(missing_path))
+
+    async def fake_save_document_ocr_result(**kwargs: Any) -> Any:
+        saved.update(kwargs)
+        return SimpleNamespace(id=12, ocr_status="failed")
+
+    def fail_extract_text_from_image(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("OCR must not run when the local file is missing")
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_settings", lambda: SimpleNamespace(ocr_languages="eng"))
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "extract_text_from_image", fail_extract_text_from_image)
+    monkeypatch.setattr(documents, "save_document_ocr_result", fake_save_document_ocr_result)
+
+    asyncio.run(documents.handle_ocr_document(message))  # type: ignore[arg-type]
+
+    assert saved["success"] is False
+    assert saved["ocr_text"] == ""
+    assert str(missing_path) in saved["error_message"]
+    assert message.answers == ["Document file not found."]
+
+
+def test_handle_ocr_document_does_not_create_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "receipt.jpg"
+    image_path.write_bytes(b"fake-image")
+    message = FakeMessage(text="/ocr_document 12")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=12, local_path=str(image_path))
+
+    async def fake_save_document_ocr_result(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=12, ocr_status="completed")
+
+    async def fail_create_transaction(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("OCR handler must not create transactions")
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_settings", lambda: SimpleNamespace(ocr_languages="eng"))
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "extract_text_from_image", lambda path, languages: "text")
+    monkeypatch.setattr(documents, "save_document_ocr_result", fake_save_document_ocr_result)
+    monkeypatch.setattr(
+        "app.services.transaction_service.create_transaction",
+        fail_create_transaction,
+    )
+
+    asyncio.run(documents.handle_ocr_document(message))  # type: ignore[arg-type]
+
+    assert message.answers[0].startswith("OCR completed.")
 
 
 def test_handle_link_document_validates_format() -> None:

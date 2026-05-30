@@ -26,5 +26,8 @@ class DocumentRead(BaseModel):
     mime_type: str | None
     file_size_bytes: int | None
     status: str
+    ocr_status: str
+    ocr_text: str | None
+    ocr_processed_at: datetime | None
     created_at: datetime
     updated_at: datetime

@@ -7,18 +7,23 @@ from aiogram.types import Message, PhotoSize
 
 from app.core.config import get_settings
 from app.models.document import Document
+from app.ocr.ocr_service import extract_text_from_image
 from app.schemas.document import DocumentCreate
 from app.services.document_service import (
     create_document,
     get_document_by_id,
     get_last_documents,
     link_document_to_transaction,
+    save_document_ocr_result,
     unlink_document_from_transaction,
 )
 from app.services.user_service import get_or_create_user
 from app.storage.file_storage import build_document_path, calculate_sha256
 
 router = Router(name="documents")
+
+OCR_RESPONSE_TEXT_LIMIT = 3000
+OCR_PREVIEW_TEXT_LIMIT = 500
 
 
 def get_async_session_factory():
@@ -51,8 +56,9 @@ def format_documents_list(documents: list[Document]) -> str:
             if document.transaction_id is not None
             else "not linked"
         )
+        ocr_status = getattr(document, "ocr_status", "not_started")
         rows.append(
-            f"{number}. ID {document.id} | {document.status} | "
+            f"{number}. ID {document.id} | {document.status} | OCR {ocr_status} | "
             f"{transaction_label} | {created_date}"
         )
     return "\n".join(rows)
@@ -75,13 +81,48 @@ def format_document_details(document: Document) -> str:
         if document.file_size_bytes is not None
         else "unknown"
     )
-    return (
+    ocr_status = getattr(document, "ocr_status", "not_started")
+    ocr_processed_at = getattr(document, "ocr_processed_at", None)
+    ocr_processed_label = (
+        ocr_processed_at.isoformat()
+        if isinstance(ocr_processed_at, datetime)
+        else "not processed"
+    )
+    rows = [
         "Document details:\n\n"
         f"ID: {document.id}\n"
         f"Status: {document.status}\n"
+        f"OCR status: {ocr_status}\n"
+        f"OCR processed at: {ocr_processed_label}\n"
         f"Created at: {created_date}\n"
         f"Transaction ID: {transaction_label}\n"
         f"File size: {file_size}"
+    ]
+    ocr_text = getattr(document, "ocr_text", None)
+    if ocr_text:
+        preview = ocr_text[:OCR_PREVIEW_TEXT_LIMIT]
+        if len(ocr_text) > OCR_PREVIEW_TEXT_LIMIT:
+            preview = f"{preview}\n... text truncated"
+        rows.append(f"\n\nOCR text preview:\n{preview}")
+    return "".join(rows)
+
+
+def format_ocr_success_message(document_id: int, ocr_text: str) -> str:
+    if not ocr_text:
+        return (
+            "OCR completed, but no text was recognized.\n\n"
+            f"Document ID: {document_id}"
+        )
+
+    display_text = ocr_text[:OCR_RESPONSE_TEXT_LIMIT]
+    if len(ocr_text) > OCR_RESPONSE_TEXT_LIMIT:
+        display_text = f"{display_text}\n... text truncated"
+
+    return (
+        "OCR completed.\n\n"
+        f"Document ID: {document_id}\n\n"
+        "Recognized text:\n"
+        f"{display_text}"
     )
 
 
@@ -220,6 +261,69 @@ async def handle_unlink_document(message: Message) -> None:
     )
 
 
+@router.message(Command("ocr_document"))
+async def handle_ocr_document(message: Message) -> None:
+    if message.from_user is None:
+        return
+
+    document_id = parse_single_int_command(message.text)
+    if document_id is None:
+        await message.answer("Use format: /ocr_document 12")
+        return
+
+    settings = get_settings()
+    session_factory = get_async_session_factory()
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session=session,
+            telegram_user_id=message.from_user.id,
+            name=message.from_user.full_name,
+        )
+        document = await get_document_by_id(session, user.id, document_id)
+        if document is None:
+            await message.answer("Document not found.")
+            return
+
+        image_path = Path(document.local_path)
+        if not image_path.exists():
+            await save_document_ocr_result(
+                session=session,
+                user_id=user.id,
+                document_id=document_id,
+                ocr_text="",
+                success=False,
+                error_message=f"Document file not found: {image_path}",
+            )
+            await message.answer("Document file not found.")
+            return
+
+        try:
+            ocr_text = extract_text_from_image(image_path, settings.ocr_languages)
+        except Exception as error:
+            await save_document_ocr_result(
+                session=session,
+                user_id=user.id,
+                document_id=document_id,
+                ocr_text="",
+                success=False,
+                error_message=str(error),
+            )
+            await message.answer(
+                "OCR failed. Please check the document image and OCR setup."
+            )
+            return
+
+        await save_document_ocr_result(
+            session=session,
+            user_id=user.id,
+            document_id=document_id,
+            ocr_text=ocr_text,
+            success=True,
+        )
+
+    await message.answer(format_ocr_success_message(document_id, ocr_text))
+
+
 @router.message(F.photo)
 async def handle_photo_document(message: Message) -> None:
     if message.from_user is None or not message.photo:
@@ -264,5 +368,5 @@ async def handle_photo_document(message: Message) -> None:
         "Document saved.\n\n"
         f"ID: {document.id}\n"
         f"Status: {document.status}\n\n"
-        "OCR is not implemented yet."
+        "OCR is available. Use /ocr_document <document_id> to extract text."
     )

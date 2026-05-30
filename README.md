@@ -4,21 +4,82 @@ Minimal working Telegram bot skeleton for a personal accounting assistant.
 
 ## Stack
 
-- Python 3.11+
+- Python 3.13 in Docker, Python 3.11+ for local development
 - aiogram 3
 - pydantic-settings
 - SQLAlchemy 2
 - Alembic
 - PostgreSQL
 - Docker Compose
+- Tesseract OCR
 - pytest
 
-## Local Setup
+## Recommended Docker Run
+
+Docker Compose is the primary runtime for the project. It starts PostgreSQL and
+the Telegram bot container, and the bot image includes the Tesseract OCR binary.
+
+Create a private `.env` from the example and fill in real credentials:
+
+```bash
+cp .env.example .env
+```
+
+At minimum, set:
+
+- `TELEGRAM_BOT_TOKEN`
+- `ALLOWED_TELEGRAM_USER_IDS`
+- `GROQ_API_KEY` if AI features are used
+
+Start the project:
+
+```bash
+docker compose up --build
+```
+
+Apply database migrations from another terminal:
+
+```bash
+docker compose exec bot alembic upgrade head
+```
+
+Alternatively, run migrations in a one-off bot container:
+
+```bash
+docker compose run --rm bot alembic upgrade head
+```
+
+The bot service overrides `DATABASE_URL` inside Docker to connect to the
+Compose `db` host:
+
+```text
+postgresql+asyncpg://ai_accountant:ai_accountant@db:5432/ai_accountant
+```
+
+Documents are stored on the host at `./data/private/documents` and mounted into
+the bot container at `/app/data/private/documents`. Keep
+`DOCUMENT_STORAGE_PATH=data/private/documents`.
+
+Check that Tesseract is available inside the bot image:
+
+```bash
+docker compose run --rm bot tesseract --version
+```
+
+Run tests:
+
+```bash
+docker compose run --rm bot pytest
+```
+
+## Optional Local Development Run
+
+Local `.venv` execution is still supported, but Docker is the official runtime.
 
 Create and activate a virtual environment:
 
 ```bash
-python3.11 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
 ```
 
@@ -26,6 +87,13 @@ Install dependencies:
 
 ```bash
 pip install -e ".[dev]"
+```
+
+OCR image extraction uses `pytesseract`, which requires the system Tesseract
+OCR binary. On macOS install it with:
+
+```bash
+brew install tesseract
 ```
 
 The project uses a local `.env` file for real credentials and runtime
@@ -37,9 +105,11 @@ Ensure the local `.env` contains:
 - `TELEGRAM_BOT_TOKEN` with the token issued by BotFather.
 - `ALLOWED_TELEGRAM_USER_IDS` with one or more comma-separated Telegram user
   ids allowed to access the bot.
-- `DATABASE_URL` using the async PostgreSQL driver.
+- `DATABASE_URL` using the async PostgreSQL driver and `localhost`.
 - `GROQ_API_KEY` with the API key used for AI features.
 - `LOG_LEVEL` if a non-default log level is needed.
+- `DOCUMENT_STORAGE_PATH=data/private/documents`.
+- `OCR_LANGUAGES` for Tesseract OCR languages, defaulting to `eng`.
 
 Start PostgreSQL:
 

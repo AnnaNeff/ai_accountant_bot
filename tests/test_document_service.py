@@ -8,6 +8,7 @@ from app.models.transaction import Transaction
 from app.services.document_service import (
     get_document_by_id,
     link_document_to_transaction,
+    save_document_ocr_result,
     unlink_document_from_transaction,
 )
 
@@ -154,3 +155,69 @@ def test_unlink_document_from_transaction_clears_transaction_id() -> None:
     assert document.transaction_id is None
     assert session.committed is True
     assert session.refreshed is document
+
+
+def test_save_document_ocr_result_saves_completed() -> None:
+    document = make_document(id=12, user_id=7)
+    session = FakeSession(documents=[document])
+
+    result = asyncio.run(
+        save_document_ocr_result(
+            session,
+            user_id=7,
+            document_id=12,
+            ocr_text="Milk\nBread",
+            success=True,
+        )  # type: ignore[arg-type]
+    )
+
+    assert result is document
+    assert document.ocr_text == "Milk\nBread"
+    assert document.ocr_status == "completed"
+    assert document.ocr_error is None
+    assert document.ocr_processed_at is not None
+    assert session.committed is True
+    assert session.refreshed is document
+
+
+def test_save_document_ocr_result_saves_failed() -> None:
+    document = make_document(id=12, user_id=7, ocr_text="old text")
+    session = FakeSession(documents=[document])
+
+    result = asyncio.run(
+        save_document_ocr_result(
+            session,
+            user_id=7,
+            document_id=12,
+            ocr_text="",
+            success=False,
+            error_message="tesseract failed",
+        )  # type: ignore[arg-type]
+    )
+
+    assert result is document
+    assert document.ocr_text == "old text"
+    assert document.ocr_status == "failed"
+    assert document.ocr_error == "tesseract failed"
+    assert document.ocr_processed_at is not None
+    assert session.committed is True
+    assert session.refreshed is document
+
+
+def test_save_document_ocr_result_does_not_update_other_user_document() -> None:
+    document = make_document(id=12, user_id=8)
+    session = FakeSession(documents=[document])
+
+    result = asyncio.run(
+        save_document_ocr_result(
+            session,
+            user_id=7,
+            document_id=12,
+            ocr_text="Milk",
+            success=True,
+        )  # type: ignore[arg-type]
+    )
+
+    assert result is None
+    assert document.ocr_text is None
+    assert session.committed is False

@@ -18,6 +18,7 @@ class Settings(BaseSettings):
         default="data/private/documents",
         alias="DOCUMENT_STORAGE_PATH",
     )
+    ocr_languages: str = Field(default="eng", alias="OCR_LANGUAGES")
 
     model_config = SettingsConfigDict(
         env_file=".env",

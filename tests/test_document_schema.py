@@ -17,6 +17,16 @@ def test_document_create_validates_uploaded_status() -> None:
     assert document.status == "uploaded"
 
 
+def test_document_create_does_not_require_ocr_fields() -> None:
+    document = DocumentCreate(
+        telegram_file_id="telegram-file-id",
+        local_path="data/private/documents/1/2026/05/file.jpg",
+        file_hash="a" * 64,
+    )
+
+    assert document.status == "uploaded"
+
+
 def test_document_create_rejects_unknown_status() -> None:
     with pytest.raises(ValidationError):
         DocumentCreate(

@@ -14,6 +14,10 @@ def test_document_table_is_registered_with_required_indexes() -> None:
         "mime_type",
         "file_size_bytes",
         "status",
+        "ocr_text",
+        "ocr_status",
+        "ocr_error",
+        "ocr_processed_at",
         "created_at",
         "updated_at",
     }
@@ -25,3 +29,8 @@ def test_document_table_is_registered_with_required_indexes() -> None:
         "ix_documents_file_hash",
         "ix_documents_status",
     }
+    assert table.c.ocr_text.nullable is True
+    assert table.c.ocr_status.nullable is False
+    assert table.c.ocr_status.server_default is not None
+    assert table.c.ocr_error.nullable is True
+    assert table.c.ocr_processed_at.nullable is True
