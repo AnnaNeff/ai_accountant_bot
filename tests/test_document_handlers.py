@@ -32,10 +32,12 @@ class FakeMessage:
         self,
         photo: list[Any] | None = None,
         bot: FakeBot | None = None,
+        text: str | None = None,
     ) -> None:
         self.from_user = SimpleNamespace(id=12345, full_name="Test User")
         self.photo = photo or []
         self.bot = bot or FakeBot()
+        self.text = text
         self.answers: list[str] = []
 
     async def answer(self, text: str, **kwargs: Any) -> None:
@@ -175,8 +177,18 @@ def test_handle_documents_shows_last_documents(monkeypatch: pytest.MonkeyPatch) 
         assert user_id == 7
         assert limit == 10
         return [
-            SimpleNamespace(id=12, status="uploaded", created_at=datetime(2026, 5, 30)),
-            SimpleNamespace(id=11, status="uploaded", created_at=datetime(2026, 5, 29)),
+            SimpleNamespace(
+                id=12,
+                status="uploaded",
+                transaction_id=45,
+                created_at=datetime(2026, 5, 30),
+            ),
+            SimpleNamespace(
+                id=11,
+                status="uploaded",
+                transaction_id=None,
+                created_at=datetime(2026, 5, 29),
+            ),
         ]
 
     monkeypatch.setattr(
@@ -191,9 +203,66 @@ def test_handle_documents_shows_last_documents(monkeypatch: pytest.MonkeyPatch) 
 
     assert message.answers == [
         "Documents:\n\n"
-        "1. ID 12 | uploaded | 2026-05-30\n"
-        "2. ID 11 | uploaded | 2026-05-29"
+        "1. ID 12 | uploaded | transaction 45 | 2026-05-30\n"
+        "2. ID 11 | uploaded | not linked | 2026-05-29"
     ]
+
+
+def test_handle_document_shows_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    message = FakeMessage(text="/document 12")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(
+        session: object,
+        user_id: int,
+        document_id: int,
+    ) -> Any:
+        assert user_id == 7
+        assert document_id == 12
+        return SimpleNamespace(
+            id=12,
+            status="uploaded",
+            transaction_id=None,
+            created_at=datetime(2026, 5, 30),
+            file_size_bytes=123456,
+        )
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+
+    asyncio.run(documents.handle_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == [
+        "Document details:\n\n"
+        "ID: 12\n"
+        "Status: uploaded\n"
+        "Created at: 2026-05-30\n"
+        "Transaction ID: not linked\n"
+        "File size: 123456 bytes"
+    ]
+
+
+def test_handle_link_document_validates_format() -> None:
+    message = FakeMessage(text="/link_document 12")
+
+    asyncio.run(documents.handle_link_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == ["Use format: /link_document 12 45"]
+
+
+def test_handle_unlink_document_validates_format() -> None:
+    message = FakeMessage(text="/unlink_document abc")
+
+    asyncio.run(documents.handle_unlink_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == ["Use format: /unlink_document 12"]
 
 
 def test_handle_documents_shows_empty_message(monkeypatch: pytest.MonkeyPatch) -> None:
