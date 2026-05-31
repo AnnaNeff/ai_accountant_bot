@@ -1,12 +1,15 @@
 import asyncio
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from app.ai.llm_client import GroqConfigurationError
 from app.bot.handlers import documents
+from app.schemas.ai_extraction import ExtractedTransaction
 from app.schemas.document import DocumentCreate
 
 
@@ -39,9 +42,11 @@ class FakeMessage:
         self.bot = bot or FakeBot()
         self.text = text
         self.answers: list[str] = []
+        self.answer_kwargs: list[dict[str, Any]] = []
 
     async def answer(self, text: str, **kwargs: Any) -> None:
         self.answers.append(text)
+        self.answer_kwargs.append(kwargs)
 
 
 class FakeSessionContext:
@@ -57,6 +62,12 @@ class FakeSessionContext:
 
 def fake_session_factory() -> FakeSessionContext:
     return FakeSessionContext()
+
+
+class FixedDate(date):
+    @classmethod
+    def today(cls) -> date:
+        return cls(2026, 5, 30)
 
 
 def photo(file_id: str = "telegram-file-id", file_size: int | None = 14) -> Any:
@@ -119,6 +130,12 @@ def test_photo_handler_creates_document(
         "Status: uploaded\n\n"
         "OCR is available. Use /ocr_document <document_id> to extract text."
     ]
+
+
+def test_old_photo_ocr_placeholder_text_is_not_used() -> None:
+    source = Path(documents.__file__).read_text()
+
+    assert "OCR is not implemented yet." not in source
 
 
 def test_photo_handler_does_not_create_transaction(
@@ -507,6 +524,376 @@ def test_handle_ocr_document_does_not_create_transaction(
     asyncio.run(documents.handle_ocr_document(message))  # type: ignore[arg-type]
 
     assert message.answers[0].startswith("OCR completed.")
+
+
+def test_handle_parse_document_validates_format() -> None:
+    message = FakeMessage(text="/parse_document")
+
+    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == ["Use format: /parse_document 12"]
+
+
+def test_handle_parse_document_shows_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    message = FakeMessage(text="/parse_document 12")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(
+        session: object,
+        user_id: int,
+        document_id: int,
+    ) -> None:
+        assert user_id == 7
+        assert document_id == 12
+        return None
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+
+    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == ["Document not found."]
+
+
+def test_handle_parse_document_requires_completed_ocr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 12")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=12, ocr_status="not_started", ocr_text=None)
+
+    def fail_extract_transaction_from_text(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("AI extractor must not run without completed OCR text")
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fail_extract_transaction_from_text,
+    )
+
+    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == [
+        "Document has no completed OCR text. Run /ocr_document first."
+    ]
+
+
+def test_handle_parse_document_successful_ai_parse_shows_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(
+            id=4,
+            ocr_status="completed",
+            ocr_text="Telegram Premium Annual 129.90 ILS 2025-09-16",
+            transaction_id=None,
+        )
+
+    def fake_extract_transaction_from_text(
+        text: str,
+        today: date,
+    ) -> ExtractedTransaction:
+        assert text == "Telegram Premium Annual 129.90 ILS 2025-09-16"
+        assert today == date(2026, 5, 30)
+        return ExtractedTransaction(
+            type="expense",
+            amount=Decimal("129.90"),
+            currency="ILS",
+            date=date(2025, 9, 16),
+            category="subscription",
+            description="Telegram Premium Annual",
+            confidence=0.87,
+            needs_confirmation=True,
+            raw_text=text,
+        )
+
+    monkeypatch.setattr(documents, "date", FixedDate)
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fake_extract_transaction_from_text,
+    )
+
+    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == [
+        "AI parsed document transaction:\n\n"
+        "Document ID: 4\n"
+        "Type: expense\n"
+        "Amount: 129.90 ILS\n"
+        "Date: 2025-09-16\n"
+        "Category: subscription\n"
+        "Description: Telegram Premium Annual\n"
+        "Confidence: 0.87\n"
+        "Needs confirmation: yes\n\n"
+        "Not saved. This is preview only."
+    ]
+
+
+def test_handle_parse_document_uses_today_when_ai_date_is_null(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, ocr_status="completed", ocr_text="129.90")
+
+    def fake_extract_transaction_from_text(
+        text: str,
+        today: date,
+    ) -> ExtractedTransaction:
+        return ExtractedTransaction(
+            type="expense",
+            amount=Decimal("129.90"),
+            currency="ILS",
+            date=None,
+            category="subscription",
+            description="Telegram Premium Annual",
+            confidence=0.87,
+            needs_confirmation=True,
+            raw_text=text,
+        )
+
+    monkeypatch.setattr(documents, "date", FixedDate)
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fake_extract_transaction_from_text,
+    )
+
+    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+
+    assert "Date: 2026-05-30" in message.answers[0]
+
+
+def test_handle_parse_document_unknown_ai_parse_shows_not_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, ocr_status="completed", ocr_text="unclear text")
+
+    def fake_extract_transaction_from_text(
+        text: str,
+        today: date,
+    ) -> ExtractedTransaction:
+        return ExtractedTransaction(
+            type="unknown",
+            amount=None,
+            currency="ILS",
+            date=None,
+            category=None,
+            description=None,
+            confidence=0,
+            needs_confirmation=True,
+            raw_text=text,
+        )
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fake_extract_transaction_from_text,
+    )
+
+    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == [
+        "AI could not confidently detect a transaction from this document.\n\n"
+        "Not saved."
+    ]
+
+
+def test_handle_parse_document_ai_config_error_shows_clear_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, ocr_status="completed", ocr_text="129.90")
+
+    def fail_extract_transaction_from_text(*args: Any, **kwargs: Any) -> Any:
+        raise GroqConfigurationError("missing key")
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fail_extract_transaction_from_text,
+    )
+
+    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+
+    assert message.answers == ["AI is not configured. Set GROQ_API_KEY in .env."]
+
+
+def test_handle_parse_document_does_not_create_transaction_or_change_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+    document = SimpleNamespace(
+        id=4,
+        ocr_status="completed",
+        ocr_text="Telegram Premium Annual 129.90 ILS",
+        transaction_id=45,
+    )
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return document
+
+    async def fail_create_transaction(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("parse_document must not create transactions")
+
+    def fake_extract_transaction_from_text(
+        text: str,
+        today: date,
+    ) -> ExtractedTransaction:
+        return ExtractedTransaction(
+            type="expense",
+            amount=Decimal("129.90"),
+            currency="ILS",
+            date=date(2025, 9, 16),
+            category="subscription",
+            description="Telegram Premium Annual",
+            confidence=0.87,
+            needs_confirmation=True,
+            raw_text=text,
+        )
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fake_extract_transaction_from_text,
+    )
+    monkeypatch.setattr(
+        documents,
+        "create_transaction",
+        fail_create_transaction,
+        raising=False,
+    )
+
+    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+
+    assert message.answers[0].startswith("AI parsed document transaction:")
+    assert document.transaction_id == 45
+
+
+def test_handle_parse_document_does_not_use_fsm_state_or_inline_buttons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, ocr_status="completed", ocr_text="129.90")
+
+    def fake_extract_transaction_from_text(
+        text: str,
+        today: date,
+    ) -> ExtractedTransaction:
+        return ExtractedTransaction(
+            type="expense",
+            amount=Decimal("129.90"),
+            currency="ILS",
+            date=date(2025, 9, 16),
+            category="subscription",
+            description="Telegram Premium Annual",
+            confidence=0.87,
+            needs_confirmation=True,
+            raw_text=text,
+        )
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fake_extract_transaction_from_text,
+    )
+
+    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+
+    assert documents.handle_parse_document.__annotations__ == {
+        "message": documents.Message,
+        "return": None,
+    }
+    assert message.answer_kwargs == [{}]
 
 
 def test_handle_link_document_validates_format() -> None:

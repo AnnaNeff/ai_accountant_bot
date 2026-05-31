@@ -1,13 +1,16 @@
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import Message, PhotoSize
 
+from app.ai.llm_client import GroqConfigurationError
+from app.ai.transaction_extractor import extract_transaction_from_text
 from app.core.config import get_settings
 from app.models.document import Document
 from app.ocr.ocr_service import extract_text_from_image
+from app.schemas.ai_extraction import ExtractedTransaction
 from app.schemas.document import DocumentCreate
 from app.services.document_service import (
     create_document,
@@ -123,6 +126,35 @@ def format_ocr_success_message(document_id: int, ocr_text: str) -> str:
         f"Document ID: {document_id}\n\n"
         "Recognized text:\n"
         f"{display_text}"
+    )
+
+
+def format_document_ai_preview(
+    document_id: int,
+    transaction: ExtractedTransaction,
+    today: date,
+) -> str:
+    amount = (
+        f"{transaction.amount:.2f} {transaction.currency}"
+        if transaction.amount is not None
+        else f"not detected {transaction.currency}"
+    )
+    transaction_date = transaction.date or today
+    category = transaction.category or "not detected"
+    description = transaction.description or "not detected"
+    needs_confirmation = "yes" if transaction.needs_confirmation else "no"
+
+    return (
+        "AI parsed document transaction:\n\n"
+        f"Document ID: {document_id}\n"
+        f"Type: {transaction.type}\n"
+        f"Amount: {amount}\n"
+        f"Date: {transaction_date.isoformat()}\n"
+        f"Category: {category}\n"
+        f"Description: {description}\n"
+        f"Confidence: {transaction.confidence:.2f}\n"
+        f"Needs confirmation: {needs_confirmation}\n\n"
+        "Not saved. This is preview only."
     )
 
 
@@ -322,6 +354,53 @@ async def handle_ocr_document(message: Message) -> None:
         )
 
     await message.answer(format_ocr_success_message(document_id, ocr_text))
+
+
+@router.message(Command("parse_document"))
+async def handle_parse_document(message: Message) -> None:
+    if message.from_user is None:
+        return
+
+    document_id = parse_single_int_command(message.text)
+    if document_id is None:
+        await message.answer("Use format: /parse_document 12")
+        return
+
+    session_factory = get_async_session_factory()
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session=session,
+            telegram_user_id=message.from_user.id,
+            name=message.from_user.full_name,
+        )
+        document = await get_document_by_id(session, user.id, document_id)
+
+    if document is None:
+        await message.answer("Document not found.")
+        return
+
+    ocr_text = getattr(document, "ocr_text", None)
+    if getattr(document, "ocr_status", None) != "completed" or not ocr_text:
+        await message.answer(
+            "Document has no completed OCR text. Run /ocr_document first."
+        )
+        return
+
+    today = date.today()
+    try:
+        transaction = extract_transaction_from_text(ocr_text, today)
+    except GroqConfigurationError:
+        await message.answer("AI is not configured. Set GROQ_API_KEY in .env.")
+        return
+
+    if transaction.type == "unknown":
+        await message.answer(
+            "AI could not confidently detect a transaction from this document.\n\n"
+            "Not saved."
+        )
+        return
+
+    await message.answer(format_document_ai_preview(document_id, transaction, today))
 
 
 @router.message(F.photo)
