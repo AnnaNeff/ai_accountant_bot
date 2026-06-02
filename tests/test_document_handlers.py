@@ -6,9 +6,12 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from aiogram.exceptions import TelegramBadRequest
 
 from app.ai.llm_client import GroqConfigurationError
+from app.bot import keyboards
 from app.bot.handlers import documents
+from app.bot.states import DocumentTransactionConfirmation
 from app.schemas.ai_extraction import ExtractedTransaction
 from app.schemas.document import DocumentCreate
 
@@ -43,10 +46,17 @@ class FakeMessage:
         self.text = text
         self.answers: list[str] = []
         self.answer_kwargs: list[dict[str, Any]] = []
+        self.edits: list[dict[str, Any]] = []
+        self.edit_text_error: Exception | None = None
 
     async def answer(self, text: str, **kwargs: Any) -> None:
         self.answers.append(text)
         self.answer_kwargs.append(kwargs)
+
+    async def edit_text(self, text: str, **kwargs: Any) -> None:
+        if self.edit_text_error is not None:
+            raise self.edit_text_error
+        self.edits.append({"text": text, **kwargs})
 
 
 class FakeSessionContext:
@@ -64,6 +74,38 @@ def fake_session_factory() -> FakeSessionContext:
     return FakeSessionContext()
 
 
+class FakeState:
+    def __init__(self, data: dict[str, Any] | None = None) -> None:
+        self.data: dict[str, Any] = data or {}
+        self.state: Any = None
+        self.clear_calls = 0
+
+    async def clear(self) -> None:
+        self.data = {}
+        self.state = None
+        self.clear_calls += 1
+
+    async def update_data(self, data: dict[str, Any]) -> None:
+        self.data.update(data)
+
+    async def set_state(self, state: Any) -> None:
+        self.state = state
+
+    async def get_data(self) -> dict[str, Any]:
+        return self.data
+
+
+class FakeCallback:
+    def __init__(self, state_data: dict[str, Any] | None = None) -> None:
+        self.message = FakeMessage()
+        self.from_user = SimpleNamespace(id=12345, full_name="Test User")
+        self.answers: list[dict[str, Any]] = []
+        self.state = FakeState(state_data)
+
+    async def answer(self, **kwargs: Any) -> None:
+        self.answers.append(kwargs)
+
+
 class FixedDate(date):
     @classmethod
     def today(cls) -> date:
@@ -77,6 +119,27 @@ def photo(file_id: str = "telegram-file-id", file_size: int | None = 14) -> Any:
         width=1280,
         height=960,
     )
+
+
+def pending_document_transaction(**overrides: Any) -> dict[str, Any]:
+    transaction: dict[str, Any] = {
+        "type": "expense",
+        "amount": "129.90",
+        "currency": "ILS",
+        "date": "2025-09-16",
+        "category": "subscription",
+        "description": "Telegram Premium Annual",
+        "confidence": 0.87,
+        "needs_confirmation": True,
+        "raw_text": "Telegram Premium Annual 129.90 ILS",
+    }
+    transaction.update(overrides.pop("transaction", {}))
+    pending: dict[str, Any] = {
+        "document_id": 4,
+        "transaction": transaction,
+    }
+    pending.update(overrides)
+    return {documents.DOCUMENT_TRANSACTION_STATE_KEY: pending}
 
 
 def test_photo_handler_creates_document(
@@ -529,7 +592,7 @@ def test_handle_ocr_document_does_not_create_transaction(
 def test_handle_parse_document_validates_format() -> None:
     message = FakeMessage(text="/parse_document")
 
-    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+    asyncio.run(documents.handle_parse_document(message, FakeState()))  # type: ignore[arg-type]
 
     assert message.answers == ["Use format: /parse_document 12"]
 
@@ -557,7 +620,7 @@ def test_handle_parse_document_shows_not_found(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
     monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
 
-    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+    asyncio.run(documents.handle_parse_document(message, FakeState()))  # type: ignore[arg-type]
 
     assert message.answers == ["Document not found."]
 
@@ -589,7 +652,7 @@ def test_handle_parse_document_requires_completed_ocr(
         fail_extract_transaction_from_text,
     )
 
-    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+    asyncio.run(documents.handle_parse_document(message, FakeState()))  # type: ignore[arg-type]
 
     assert message.answers == [
         "Document has no completed OCR text. Run /ocr_document first."
@@ -600,6 +663,7 @@ def test_handle_parse_document_successful_ai_parse_shows_preview(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     message = FakeMessage(text="/parse_document 4")
+    state = FakeState()
 
     async def fake_get_or_create_user(**kwargs: Any) -> Any:
         return SimpleNamespace(id=7)
@@ -644,7 +708,7 @@ def test_handle_parse_document_successful_ai_parse_shows_preview(
         fake_extract_transaction_from_text,
     )
 
-    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+    asyncio.run(documents.handle_parse_document(message, state))  # type: ignore[arg-type]
 
     assert message.answers == [
         "AI parsed document transaction:\n\n"
@@ -654,16 +718,23 @@ def test_handle_parse_document_successful_ai_parse_shows_preview(
         "Date: 2025-09-16\n"
         "Category: subscription\n"
         "Description: Telegram Premium Annual\n"
-        "Confidence: 0.87\n"
-        "Needs confirmation: yes\n\n"
-        "Not saved. This is preview only."
+        "Confidence: 0.87\n\n"
+        "Save this transaction?"
     ]
+    keyboard = message.answer_kwargs[0]["reply_markup"]
+    buttons = keyboard.inline_keyboard[0]
+    assert buttons[0].text == "Save transaction"
+    assert buttons[0].callback_data == "document_transaction:save"
+    assert buttons[1].text == "Cancel"
+    assert buttons[1].callback_data == "document_transaction:cancel"
+    assert state.state == DocumentTransactionConfirmation.waiting_for_confirmation
 
 
 def test_handle_parse_document_uses_today_when_ai_date_is_null(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     message = FakeMessage(text="/parse_document 4")
+    state = FakeState()
 
     async def fake_get_or_create_user(**kwargs: Any) -> Any:
         return SimpleNamespace(id=7)
@@ -701,9 +772,75 @@ def test_handle_parse_document_uses_today_when_ai_date_is_null(
         fake_extract_transaction_from_text,
     )
 
-    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+    asyncio.run(documents.handle_parse_document(message, state))  # type: ignore[arg-type]
 
     assert "Date: 2026-05-30" in message.answers[0]
+    pending = state.data[documents.DOCUMENT_TRANSACTION_STATE_KEY]
+    assert pending["transaction"]["date"] == "2026-05-30"
+
+
+def test_handle_parse_document_successful_ai_parse_saves_pending_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+    state = FakeState()
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(
+            id=4,
+            ocr_status="completed",
+            ocr_text="Telegram Premium Annual 129.90 ILS",
+            transaction_id=None,
+        )
+
+    def fake_extract_transaction_from_text(
+        text: str,
+        today: date,
+    ) -> ExtractedTransaction:
+        return ExtractedTransaction(
+            type="expense",
+            amount=Decimal("129.90"),
+            currency="ILS",
+            date=date(2025, 9, 16),
+            category="subscription",
+            description="Telegram Premium Annual",
+            confidence=0.87,
+            needs_confirmation=True,
+            raw_text=text,
+        )
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fake_extract_transaction_from_text,
+    )
+
+    asyncio.run(documents.handle_parse_document(message, state))  # type: ignore[arg-type]
+
+    pending = state.data[documents.DOCUMENT_TRANSACTION_STATE_KEY]
+    assert pending["document_id"] == 4
+    assert pending["transaction"] == {
+        "type": "expense",
+        "amount": "129.90",
+        "currency": "ILS",
+        "date": "2025-09-16",
+        "category": "subscription",
+        "description": "Telegram Premium Annual",
+        "confidence": 0.87,
+        "needs_confirmation": True,
+        "raw_text": "Telegram Premium Annual 129.90 ILS",
+    }
+    assert state.state == DocumentTransactionConfirmation.waiting_for_confirmation
 
 
 def test_handle_parse_document_unknown_ai_parse_shows_not_saved(
@@ -746,12 +883,175 @@ def test_handle_parse_document_unknown_ai_parse_shows_not_saved(
         fake_extract_transaction_from_text,
     )
 
-    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+    state = FakeState()
+    asyncio.run(documents.handle_parse_document(message, state))  # type: ignore[arg-type]
 
     assert message.answers == [
         "AI could not confidently detect a transaction from this document.\n\n"
         "Not saved."
     ]
+    assert message.answer_kwargs == [{}]
+    assert state.state is None
+    assert state.data == {}
+
+
+def test_handle_parse_document_amount_none_shows_not_saved_without_buttons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+    state = FakeState()
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, ocr_status="completed", ocr_text="receipt")
+
+    def fake_extract_transaction_from_text(
+        text: str,
+        today: date,
+    ) -> ExtractedTransaction:
+        return ExtractedTransaction(
+            type="expense",
+            amount=None,
+            currency="ILS",
+            date=None,
+            category="subscription",
+            description="Telegram Premium Annual",
+            confidence=0.87,
+            needs_confirmation=True,
+            raw_text=text,
+        )
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fake_extract_transaction_from_text,
+    )
+
+    asyncio.run(documents.handle_parse_document(message, state))  # type: ignore[arg-type]
+
+    assert message.answers == [
+        "AI could not detect transaction amount from this document.\n\n"
+        "Not saved."
+    ]
+    assert message.answer_kwargs == [{}]
+    assert state.state is None
+    assert state.data == {}
+
+
+def test_handle_parse_document_low_confidence_shows_not_saved_without_buttons(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+    state = FakeState()
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, ocr_status="completed", ocr_text="receipt")
+
+    def fake_extract_transaction_from_text(
+        text: str,
+        today: date,
+    ) -> ExtractedTransaction:
+        return ExtractedTransaction(
+            type="expense",
+            amount=Decimal("129.90"),
+            currency="ILS",
+            date=None,
+            category="subscription",
+            description="Telegram Premium Annual",
+            confidence=0.49,
+            needs_confirmation=True,
+            raw_text=text,
+        )
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fake_extract_transaction_from_text,
+    )
+
+    asyncio.run(documents.handle_parse_document(message, state))  # type: ignore[arg-type]
+
+    assert message.answers == [
+        "AI confidence is too low to create a transaction from this document.\n\n"
+        "Not saved."
+    ]
+    assert message.answer_kwargs == [{}]
+    assert state.state is None
+    assert state.data == {}
+
+
+def test_handle_parse_document_clears_old_pending_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+    state = FakeState()
+    state.data = {
+        documents.DOCUMENT_TRANSACTION_STATE_KEY: {
+            "document_id": 99,
+            "transaction": {"amount": "1.00"},
+        },
+    }
+    state.state = DocumentTransactionConfirmation.waiting_for_confirmation
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, ocr_status="completed", ocr_text="unclear")
+
+    def fake_extract_transaction_from_text(
+        text: str,
+        today: date,
+    ) -> ExtractedTransaction:
+        return ExtractedTransaction(
+            type="unknown",
+            amount=None,
+            currency="ILS",
+            date=None,
+            category=None,
+            description=None,
+            confidence=0,
+            needs_confirmation=True,
+            raw_text=text,
+        )
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fake_extract_transaction_from_text,
+    )
+
+    asyncio.run(documents.handle_parse_document(message, state))  # type: ignore[arg-type]
+
+    assert state.clear_calls == 1
+    assert state.state is None
+    assert state.data == {}
 
 
 def test_handle_parse_document_ai_config_error_shows_clear_message(
@@ -781,7 +1081,7 @@ def test_handle_parse_document_ai_config_error_shows_clear_message(
         fail_extract_transaction_from_text,
     )
 
-    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+    asyncio.run(documents.handle_parse_document(message, FakeState()))  # type: ignore[arg-type]
 
     assert message.answers == ["AI is not configured. Set GROQ_API_KEY in .env."]
 
@@ -841,16 +1141,17 @@ def test_handle_parse_document_does_not_create_transaction_or_change_document(
         raising=False,
     )
 
-    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+    asyncio.run(documents.handle_parse_document(message, FakeState()))  # type: ignore[arg-type]
 
     assert message.answers[0].startswith("AI parsed document transaction:")
     assert document.transaction_id == 45
 
 
-def test_handle_parse_document_does_not_use_fsm_state_or_inline_buttons(
+def test_handle_parse_document_sets_fsm_state_and_inline_buttons(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     message = FakeMessage(text="/parse_document 4")
+    state = FakeState()
 
     async def fake_get_or_create_user(**kwargs: Any) -> Any:
         return SimpleNamespace(id=7)
@@ -887,13 +1188,349 @@ def test_handle_parse_document_does_not_use_fsm_state_or_inline_buttons(
         fake_extract_transaction_from_text,
     )
 
-    asyncio.run(documents.handle_parse_document(message))  # type: ignore[arg-type]
+    asyncio.run(documents.handle_parse_document(message, state))  # type: ignore[arg-type]
 
     assert documents.handle_parse_document.__annotations__ == {
         "message": documents.Message,
+        "state": documents.FSMContext,
         "return": None,
     }
-    assert message.answer_kwargs == [{}]
+    assert "reply_markup" in message.answer_kwargs[0]
+    assert state.state == DocumentTransactionConfirmation.waiting_for_confirmation
+
+
+def test_document_transaction_callback_data_differs_from_ai_parse() -> None:
+    document_keyboard = keyboards.document_transaction_confirmation_keyboard()
+    ai_keyboard = keyboards.ai_transaction_confirmation_keyboard()
+
+    document_callback_data = {
+        button.callback_data
+        for row in document_keyboard.inline_keyboard
+        for button in row
+    }
+    ai_callback_data = {
+        button.callback_data
+        for row in ai_keyboard.inline_keyboard
+        for button in row
+    }
+
+    assert document_callback_data == {
+        "document_transaction:save",
+        "document_transaction:cancel",
+    }
+    assert document_callback_data.isdisjoint(ai_callback_data)
+
+
+def test_handle_document_transaction_save_creates_transaction_and_links_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = FakeCallback(pending_document_transaction())
+    document = SimpleNamespace(id=4, transaction_id=None)
+    created: dict[str, Any] = {}
+    linked: dict[str, Any] = {}
+
+    async def fake_get_or_create_user(
+        session: object,
+        telegram_user_id: int,
+        name: str | None = None,
+    ) -> SimpleNamespace:
+        assert telegram_user_id == 12345
+        assert name == "Test User"
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(
+        session: object,
+        user_id: int,
+        document_id: int,
+    ) -> Any:
+        assert user_id == 7
+        assert document_id == 4
+        return document
+
+    async def fake_create_transaction(**kwargs: Any) -> SimpleNamespace:
+        created.update(kwargs)
+        return SimpleNamespace(id=123)
+
+    async def fake_link_document_to_transaction(
+        session: object,
+        user_id: int,
+        document_id: int,
+        transaction_id: int,
+    ) -> Any:
+        linked.update(
+            {
+                "user_id": user_id,
+                "document_id": document_id,
+                "transaction_id": transaction_id,
+            }
+        )
+        document.transaction_id = transaction_id
+        return document
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "create_transaction", fake_create_transaction)
+    monkeypatch.setattr(
+        documents,
+        "link_document_to_transaction",
+        fake_link_document_to_transaction,
+    )
+
+    asyncio.run(
+        documents.handle_document_transaction_save(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    transaction_data = created["data"]
+    assert created["user_id"] == 7
+    assert created["source"] == "document_ocr_ai"
+    assert created["status"] == "confirmed"
+    assert transaction_data.type == "expense"
+    assert transaction_data.amount == Decimal("129.90")
+    assert transaction_data.currency == "ILS"
+    assert transaction_data.date == date(2025, 9, 16)
+    assert transaction_data.category == "subscription"
+    assert transaction_data.description == "Telegram Premium Annual"
+    assert linked == {"user_id": 7, "document_id": 4, "transaction_id": 123}
+    assert document.transaction_id == 123
+    assert callback.state.data == {}
+    assert callback.state.clear_calls == 1
+    assert callback.message.edits == [
+        {
+            "text": "Transaction saved from document.\n\n"
+            "Document ID: 4\n"
+            "Transaction ID: 123\n"
+            "Type: expense\n"
+            "Amount: 129.90 ILS\n"
+            "Date: 2025-09-16\n"
+            "Description: Telegram Premium Annual",
+            "reply_markup": None,
+        }
+    ]
+
+
+def test_handle_document_transaction_save_falls_back_when_edit_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = FakeCallback(pending_document_transaction())
+    callback.message.edit_text_error = TelegramBadRequest(None, "message can't be edited")  # type: ignore[arg-type]
+
+    async def fake_get_or_create_user(**kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, transaction_id=None)
+
+    async def fake_create_transaction(**kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(id=123)
+
+    async def fake_link_document_to_transaction(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, transaction_id=123)
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "create_transaction", fake_create_transaction)
+    monkeypatch.setattr(
+        documents,
+        "link_document_to_transaction",
+        fake_link_document_to_transaction,
+    )
+
+    asyncio.run(
+        documents.handle_document_transaction_save(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    assert callback.message.answers == [
+        "Transaction saved from document.\n\n"
+        "Document ID: 4\n"
+        "Transaction ID: 123\n"
+        "Type: expense\n"
+        "Amount: 129.90 ILS\n"
+        "Date: 2025-09-16\n"
+        "Description: Telegram Premium Annual"
+    ]
+
+
+def test_handle_document_transaction_repeated_save_does_not_create_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = FakeCallback(pending_document_transaction())
+    created_count = 0
+
+    async def fake_get_or_create_user(**kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, transaction_id=None)
+
+    async def fake_create_transaction(**kwargs: Any) -> SimpleNamespace:
+        nonlocal created_count
+        created_count += 1
+        return SimpleNamespace(id=123)
+
+    async def fake_link_document_to_transaction(*args: Any, **kwargs: Any) -> Any:
+        return SimpleNamespace(id=4, transaction_id=123)
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "create_transaction", fake_create_transaction)
+    monkeypatch.setattr(
+        documents,
+        "link_document_to_transaction",
+        fake_link_document_to_transaction,
+    )
+
+    asyncio.run(
+        documents.handle_document_transaction_save(callback, callback.state)  # type: ignore[arg-type]
+    )
+    asyncio.run(
+        documents.handle_document_transaction_save(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    assert created_count == 1
+    assert callback.message.answers == ["No pending document transaction to save."]
+
+
+def test_handle_document_transaction_save_without_pending_state_returns_message() -> None:
+    callback = FakeCallback()
+
+    asyncio.run(
+        documents.handle_document_transaction_save(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    assert callback.message.answers == ["No pending document transaction to save."]
+    assert callback.state.clear_calls == 0
+
+
+def test_handle_document_transaction_save_rejects_foreign_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = FakeCallback(pending_document_transaction())
+    created = False
+
+    async def fake_get_or_create_user(**kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(
+        session: object,
+        user_id: int,
+        document_id: int,
+    ) -> None:
+        assert user_id == 7
+        assert document_id == 4
+        return None
+
+    async def fail_create_transaction(**kwargs: Any) -> None:
+        nonlocal created
+        created = True
+        raise AssertionError("foreign document transaction must not be created")
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "create_transaction", fail_create_transaction)
+
+    asyncio.run(
+        documents.handle_document_transaction_save(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    assert created is False
+    assert callback.state.data == {}
+    assert callback.state.clear_calls == 1
+    assert callback.message.answers == ["Document not found."]
+
+
+def test_handle_document_transaction_cancel_does_not_create_or_link_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = FakeCallback(pending_document_transaction())
+    document = SimpleNamespace(id=4, transaction_id=45)
+
+    async def fail_create_transaction(**kwargs: Any) -> None:
+        raise AssertionError("cancel must not create transaction")
+
+    async def fail_link_document_to_transaction(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("cancel must not link document")
+
+    monkeypatch.setattr(documents, "create_transaction", fail_create_transaction)
+    monkeypatch.setattr(
+        documents,
+        "link_document_to_transaction",
+        fail_link_document_to_transaction,
+    )
+
+    asyncio.run(
+        documents.handle_document_transaction_cancel(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    assert document.transaction_id == 45
+    assert callback.state.data == {}
+    assert callback.state.clear_calls == 1
+    assert callback.message.edits == [
+        {
+            "text": "Document transaction cancelled. Not saved.",
+            "reply_markup": None,
+        }
+    ]
+
+
+def test_handle_document_transaction_cancel_falls_back_when_edit_fails() -> None:
+    callback = FakeCallback(pending_document_transaction())
+    callback.message.edit_text_error = TelegramBadRequest(None, "message can't be edited")  # type: ignore[arg-type]
+
+    asyncio.run(
+        documents.handle_document_transaction_cancel(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    assert callback.message.answers == ["Document transaction cancelled. Not saved."]
+
+
+def test_handle_document_transaction_cancel_without_pending_state_returns_message() -> None:
+    callback = FakeCallback()
+
+    asyncio.run(
+        documents.handle_document_transaction_cancel(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    assert callback.message.answers == ["No pending document transaction to cancel."]
+    assert callback.state.clear_calls == 0
+
+
+def test_handle_document_transaction_repeated_cancel_does_not_fail() -> None:
+    callback = FakeCallback(pending_document_transaction())
+
+    asyncio.run(
+        documents.handle_document_transaction_cancel(callback, callback.state)  # type: ignore[arg-type]
+    )
+    asyncio.run(
+        documents.handle_document_transaction_cancel(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    assert callback.message.edits == [
+        {
+            "text": "Document transaction cancelled. Not saved.",
+            "reply_markup": None,
+        }
+    ]
+    assert callback.message.answers == ["No pending document transaction to cancel."]
 
 
 def test_handle_link_document_validates_format() -> None:

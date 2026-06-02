@@ -1,17 +1,23 @@
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import Message, PhotoSize
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message, PhotoSize
 
 from app.ai.llm_client import GroqConfigurationError
 from app.ai.transaction_extractor import extract_transaction_from_text
+from app.bot.keyboards import document_transaction_confirmation_keyboard
+from app.bot.states import DocumentTransactionConfirmation
 from app.core.config import get_settings
 from app.models.document import Document
 from app.ocr.ocr_service import extract_text_from_image
 from app.schemas.ai_extraction import ExtractedTransaction
 from app.schemas.document import DocumentCreate
+from app.schemas.transaction import TransactionCreate
 from app.services.document_service import (
     create_document,
     get_document_by_id,
@@ -20,6 +26,7 @@ from app.services.document_service import (
     save_document_ocr_result,
     unlink_document_from_transaction,
 )
+from app.services.transaction_service import create_transaction
 from app.services.user_service import get_or_create_user
 from app.storage.file_storage import build_document_path, calculate_sha256
 
@@ -27,6 +34,7 @@ router = Router(name="documents")
 
 OCR_RESPONSE_TEXT_LIMIT = 3000
 OCR_PREVIEW_TEXT_LIMIT = 500
+DOCUMENT_TRANSACTION_STATE_KEY = "document_transaction"
 
 
 def get_async_session_factory():
@@ -134,15 +142,10 @@ def format_document_ai_preview(
     transaction: ExtractedTransaction,
     today: date,
 ) -> str:
-    amount = (
-        f"{transaction.amount:.2f} {transaction.currency}"
-        if transaction.amount is not None
-        else f"not detected {transaction.currency}"
-    )
+    amount = f"{transaction.amount:.2f} {transaction.currency}"
     transaction_date = transaction.date or today
     category = transaction.category or "not detected"
     description = transaction.description or "not detected"
-    needs_confirmation = "yes" if transaction.needs_confirmation else "no"
 
     return (
         "AI parsed document transaction:\n\n"
@@ -152,10 +155,49 @@ def format_document_ai_preview(
         f"Date: {transaction_date.isoformat()}\n"
         f"Category: {category}\n"
         f"Description: {description}\n"
-        f"Confidence: {transaction.confidence:.2f}\n"
-        f"Needs confirmation: {needs_confirmation}\n\n"
-        "Not saved. This is preview only."
+        f"Confidence: {transaction.confidence:.2f}\n\n"
+        "Save this transaction?"
     )
+
+
+def transaction_create_from_document_ai_data(data: dict[str, object]) -> TransactionCreate:
+    return TransactionCreate(
+        type=data["type"],  # type: ignore[arg-type]
+        amount=Decimal(str(data["amount"])),
+        currency=str(data.get("currency") or "ILS"),
+        date=date.fromisoformat(str(data["date"])),
+        category=data.get("category"),  # type: ignore[arg-type]
+        description=data.get("description"),  # type: ignore[arg-type]
+    )
+
+
+def format_document_transaction_saved_message(
+    document_id: int,
+    transaction_id: int,
+    transaction_data: TransactionCreate,
+) -> str:
+    return (
+        "Transaction saved from document.\n\n"
+        f"Document ID: {document_id}\n"
+        f"Transaction ID: {transaction_id}\n"
+        f"Type: {transaction_data.type}\n"
+        f"Amount: {transaction_data.amount:.2f} {transaction_data.currency}\n"
+        f"Date: {transaction_data.date.isoformat()}\n"
+        f"Description: {transaction_data.description or 'not detected'}"
+    )
+
+
+async def replace_callback_message_text(
+    callback: CallbackQuery,
+    text: str,
+) -> None:
+    if callback.message is None:
+        return
+
+    try:
+        await callback.message.edit_text(text, reply_markup=None)
+    except TelegramBadRequest:
+        await callback.message.answer(text)
 
 
 def parse_single_int_command(text: str | None) -> int | None:
@@ -357,9 +399,11 @@ async def handle_ocr_document(message: Message) -> None:
 
 
 @router.message(Command("parse_document"))
-async def handle_parse_document(message: Message) -> None:
+async def handle_parse_document(message: Message, state: FSMContext) -> None:
     if message.from_user is None:
         return
+
+    await state.clear()
 
     document_id = parse_single_int_command(message.text)
     if document_id is None:
@@ -400,7 +444,127 @@ async def handle_parse_document(message: Message) -> None:
         )
         return
 
-    await message.answer(format_document_ai_preview(document_id, transaction, today))
+    if transaction.amount is None:
+        await message.answer(
+            "AI could not detect transaction amount from this document.\n\n"
+            "Not saved."
+        )
+        return
+
+    if transaction.confidence < 0.5:
+        await message.answer(
+            "AI confidence is too low to create a transaction from this document.\n\n"
+            "Not saved."
+        )
+        return
+
+    transaction_to_confirm = transaction.model_copy(
+        update={"date": transaction.date or today},
+    )
+    await state.update_data(
+        {
+            DOCUMENT_TRANSACTION_STATE_KEY: {
+                "document_id": document_id,
+                "transaction": transaction_to_confirm.model_dump(mode="json"),
+            },
+        },
+    )
+    await state.set_state(DocumentTransactionConfirmation.waiting_for_confirmation)
+    await message.answer(
+        format_document_ai_preview(document_id, transaction_to_confirm, today),
+        reply_markup=document_transaction_confirmation_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "document_transaction:save")
+async def handle_document_transaction_save(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    state_data = await state.get_data()
+    pending = state_data.get(DOCUMENT_TRANSACTION_STATE_KEY)
+
+    if not isinstance(pending, dict):
+        await callback.answer()
+        if callback.message is not None:
+            await callback.message.answer("No pending document transaction to save.")
+        return
+
+    if callback.from_user is None:
+        return
+
+    document_id = pending.get("document_id")
+    transaction_payload = pending.get("transaction")
+    if not isinstance(document_id, int) or not isinstance(transaction_payload, dict):
+        await state.clear()
+        await callback.answer()
+        if callback.message is not None:
+            await callback.message.answer("No pending document transaction to save.")
+        return
+
+    transaction_data = transaction_create_from_document_ai_data(transaction_payload)
+    session_factory = get_async_session_factory()
+
+    async with session_factory() as session:
+        user = await get_or_create_user(
+            session=session,
+            telegram_user_id=callback.from_user.id,
+            name=callback.from_user.full_name,
+        )
+        document = await get_document_by_id(session, user.id, document_id)
+        if document is None:
+            await state.clear()
+            await callback.answer()
+            if callback.message is not None:
+                await callback.message.answer("Document not found.")
+            return
+
+        transaction = await create_transaction(
+            session=session,
+            user_id=user.id,
+            data=transaction_data,
+            source="document_ocr_ai",
+            status="confirmed",
+        )
+        await link_document_to_transaction(
+            session,
+            user.id,
+            document_id,
+            transaction.id,
+        )
+
+    await state.clear()
+    await callback.answer()
+    await replace_callback_message_text(
+        callback,
+        format_document_transaction_saved_message(
+            document_id=document_id,
+            transaction_id=transaction.id,
+            transaction_data=transaction_data,
+        ),
+    )
+
+
+@router.callback_query(F.data == "document_transaction:cancel")
+async def handle_document_transaction_cancel(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    state_data = await state.get_data()
+    pending = state_data.get(DOCUMENT_TRANSACTION_STATE_KEY)
+
+    if not isinstance(pending, dict):
+        await callback.answer()
+        if callback.message is not None:
+            await callback.message.answer("No pending document transaction to cancel.")
+        return
+
+    await state.clear()
+    await callback.answer()
+    await replace_callback_message_text(
+        callback,
+        "Document transaction cancelled. Not saved.",
+    )
 
 
 @router.message(F.photo)

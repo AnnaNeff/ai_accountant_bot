@@ -20,3 +20,20 @@ def ai_transaction_confirmation_keyboard() -> InlineKeyboardMarkup:
             ],
         ],
     )
+
+
+def document_transaction_confirmation_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Save transaction",
+                    callback_data="document_transaction:save",
+                ),
+                InlineKeyboardButton(
+                    text="Cancel",
+                    callback_data="document_transaction:cancel",
+                ),
+            ],
+        ],
+    )
