@@ -1086,10 +1086,11 @@ def test_handle_parse_document_ai_config_error_shows_clear_message(
     assert message.answers == ["AI is not configured. Set GROQ_API_KEY in .env."]
 
 
-def test_handle_parse_document_does_not_create_transaction_or_change_document(
+def test_handle_parse_document_linked_document_blocks_ai_parse_and_save_buttons(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     message = FakeMessage(text="/parse_document 4")
+    state = FakeState()
     document = SimpleNamespace(
         id=4,
         ocr_status="completed",
@@ -1105,6 +1106,59 @@ def test_handle_parse_document_does_not_create_transaction_or_change_document(
 
     async def fail_create_transaction(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("parse_document must not create transactions")
+
+    def fail_extract_transaction_from_text(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("linked document must not call AI extractor")
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(
+        documents,
+        "extract_transaction_from_text",
+        fail_extract_transaction_from_text,
+    )
+    monkeypatch.setattr(
+        documents,
+        "create_transaction",
+        fail_create_transaction,
+        raising=False,
+    )
+
+    asyncio.run(documents.handle_parse_document(message, state))  # type: ignore[arg-type]
+
+    assert message.answers == [
+        "This document is already linked to transaction 45.\n\n"
+        "Unlink it first if you want to create a new transaction:\n"
+        "/unlink_document 4"
+    ]
+    assert message.answer_kwargs == [{}]
+    assert state.data == {}
+    assert state.state is None
+    assert document.transaction_id == 45
+
+
+def test_handle_parse_document_after_unlink_can_show_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage(text="/parse_document 4")
+    state = FakeState()
+    document = SimpleNamespace(
+        id=4,
+        ocr_status="completed",
+        ocr_text="Telegram Premium Annual 129.90 ILS",
+        transaction_id=None,
+    )
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return document
 
     def fake_extract_transaction_from_text(
         text: str,
@@ -1134,17 +1188,12 @@ def test_handle_parse_document_does_not_create_transaction_or_change_document(
         "extract_transaction_from_text",
         fake_extract_transaction_from_text,
     )
-    monkeypatch.setattr(
-        documents,
-        "create_transaction",
-        fail_create_transaction,
-        raising=False,
-    )
 
-    asyncio.run(documents.handle_parse_document(message, FakeState()))  # type: ignore[arg-type]
+    asyncio.run(documents.handle_parse_document(message, state))  # type: ignore[arg-type]
 
     assert message.answers[0].startswith("AI parsed document transaction:")
-    assert document.transaction_id == 45
+    assert "reply_markup" in message.answer_kwargs[0]
+    assert state.state == DocumentTransactionConfirmation.waiting_for_confirmation
 
 
 def test_handle_parse_document_sets_fsm_state_and_inline_buttons(
@@ -1456,6 +1505,112 @@ def test_handle_document_transaction_save_rejects_foreign_document(
     assert callback.state.data == {}
     assert callback.state.clear_calls == 1
     assert callback.message.answers == ["Document not found."]
+
+
+def test_handle_document_transaction_save_rejects_document_linked_after_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = FakeCallback(pending_document_transaction())
+    document = SimpleNamespace(id=4, transaction_id=45)
+    created = False
+
+    async def fake_get_or_create_user(**kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(
+        session: object,
+        user_id: int,
+        document_id: int,
+    ) -> Any:
+        assert user_id == 7
+        assert document_id == 4
+        return document
+
+    async def fail_create_transaction(**kwargs: Any) -> None:
+        nonlocal created
+        created = True
+        raise AssertionError("linked document must not create duplicate transaction")
+
+    async def fail_link_document_to_transaction(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("linked document must not be relinked")
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "create_transaction", fail_create_transaction)
+    monkeypatch.setattr(
+        documents,
+        "link_document_to_transaction",
+        fail_link_document_to_transaction,
+    )
+
+    asyncio.run(
+        documents.handle_document_transaction_save(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    assert created is False
+    assert document.transaction_id == 45
+    assert callback.state.data == {}
+    assert callback.state.clear_calls == 1
+    assert callback.message.edits == [
+        {
+            "text": "This document is already linked to transaction 45.\n\n"
+            "Transaction was not created.",
+            "reply_markup": None,
+        }
+    ]
+
+
+def test_handle_document_transaction_save_after_unlink_can_create_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    callback = FakeCallback(pending_document_transaction())
+    document = SimpleNamespace(id=4, transaction_id=None)
+
+    async def fake_get_or_create_user(**kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_document_by_id(*args: Any, **kwargs: Any) -> Any:
+        return document
+
+    async def fake_create_transaction(**kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(id=123)
+
+    async def fake_link_document_to_transaction(
+        session: object,
+        user_id: int,
+        document_id: int,
+        transaction_id: int,
+    ) -> Any:
+        document.transaction_id = transaction_id
+        return document
+
+    monkeypatch.setattr(
+        documents,
+        "get_async_session_factory",
+        lambda: fake_session_factory,
+    )
+    monkeypatch.setattr(documents, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(documents, "get_document_by_id", fake_get_document_by_id)
+    monkeypatch.setattr(documents, "create_transaction", fake_create_transaction)
+    monkeypatch.setattr(
+        documents,
+        "link_document_to_transaction",
+        fake_link_document_to_transaction,
+    )
+
+    asyncio.run(
+        documents.handle_document_transaction_save(callback, callback.state)  # type: ignore[arg-type]
+    )
+
+    assert document.transaction_id == 123
+    assert callback.message.edits[0]["text"].startswith(
+        "Transaction saved from document."
+    )
 
 
 def test_handle_document_transaction_cancel_does_not_create_or_link_transaction(

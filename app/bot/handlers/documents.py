@@ -187,6 +187,24 @@ def format_document_transaction_saved_message(
     )
 
 
+def format_document_already_linked_message(
+    document_id: int,
+    transaction_id: int,
+) -> str:
+    return (
+        f"This document is already linked to transaction {transaction_id}.\n\n"
+        "Unlink it first if you want to create a new transaction:\n"
+        f"/unlink_document {document_id}"
+    )
+
+
+def format_document_already_linked_save_message(transaction_id: int) -> str:
+    return (
+        f"This document is already linked to transaction {transaction_id}.\n\n"
+        "Transaction was not created."
+    )
+
+
 async def replace_callback_message_text(
     callback: CallbackQuery,
     text: str,
@@ -423,6 +441,13 @@ async def handle_parse_document(message: Message, state: FSMContext) -> None:
         await message.answer("Document not found.")
         return
 
+    transaction_id = getattr(document, "transaction_id", None)
+    if transaction_id is not None:
+        await message.answer(
+            format_document_already_linked_message(document_id, transaction_id)
+        )
+        return
+
     ocr_text = getattr(document, "ocr_text", None)
     if getattr(document, "ocr_status", None) != "completed" or not ocr_text:
         await message.answer(
@@ -517,6 +542,16 @@ async def handle_document_transaction_save(
             await callback.answer()
             if callback.message is not None:
                 await callback.message.answer("Document not found.")
+            return
+
+        transaction_id = getattr(document, "transaction_id", None)
+        if transaction_id is not None:
+            await state.clear()
+            await callback.answer()
+            await replace_callback_message_text(
+                callback,
+                format_document_already_linked_save_message(transaction_id),
+            )
             return
 
         transaction = await create_transaction(
