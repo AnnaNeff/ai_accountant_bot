@@ -1,5 +1,6 @@
 import calendar
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -128,6 +129,10 @@ async def generate_recurring_transactions(
             user_id=user_id,
             type=rule.type,
             amount=rule.amount,
+            amount_total=rule.amount,
+            vat_relevant=False,
+            business_use_percent=Decimal("100.00"),
+            balance_impact_type="business",
             currency=rule.currency,
             category=rule.category,
             description=rule.description,

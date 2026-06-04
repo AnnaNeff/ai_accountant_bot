@@ -10,6 +10,10 @@ from app.services.user_service import get_or_create_user
 router = Router(name="profile")
 
 
+def format_optional_value(value: object | None) -> str:
+    return "not set" if value is None else str(value)
+
+
 def format_financial_profile(profile: FinancialProfile | None) -> str:
     if profile is None:
         return "Financial profile is not set. Use bootstrap.yaml to load initial data."
@@ -18,7 +22,14 @@ def format_financial_profile(profile: FinancialProfile | None) -> str:
         "Financial profile:\n\n"
         f"Opening balance: {profile.opening_balance:,.2f}\n"
         f"Currency: {profile.currency}\n"
-        f"Opening balance date: {profile.opening_balance_date.isoformat()}"
+        f"Opening balance date: {profile.opening_balance_date.isoformat()}\n"
+        f"Business type: {profile.business_type}\n"
+        f"Tax country: {profile.tax_country}\n"
+        f"Default VAT rate: {format_optional_value(profile.default_vat_rate)}\n"
+        "Income tax reserve percent: "
+        f"{format_optional_value(profile.income_tax_reserve_percent)}\n"
+        "Bituach Leumi reserve percent: "
+        f"{format_optional_value(profile.bituach_leumi_reserve_percent)}"
     )
 
 

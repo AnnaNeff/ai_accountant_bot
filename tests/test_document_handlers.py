@@ -1340,6 +1340,10 @@ def test_handle_document_transaction_save_creates_transaction_and_links_document
     assert created["status"] == "confirmed"
     assert transaction_data.type == "expense"
     assert transaction_data.amount == Decimal("129.90")
+    assert transaction_data.amount_total == Decimal("129.90")
+    assert transaction_data.vat_relevant is False
+    assert transaction_data.business_use_percent == Decimal("100.00")
+    assert transaction_data.balance_impact_type == "business"
     assert transaction_data.currency == "ILS"
     assert transaction_data.date == date(2025, 9, 16)
     assert transaction_data.category == "subscription"

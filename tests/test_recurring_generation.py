@@ -121,6 +121,10 @@ def test_generate_recurring_transactions_sets_transaction_defaults() -> None:
     assert transaction.user_id == 7
     assert transaction.type == "income"
     assert transaction.amount == Decimal("3000.00")
+    assert transaction.amount_total == Decimal("3000.00")
+    assert transaction.vat_relevant is False
+    assert transaction.business_use_percent == Decimal("100.00")
+    assert transaction.balance_impact_type == "business"
     assert transaction.currency == "ILS"
     assert transaction.category == "services"
     assert transaction.description == "Client payment"

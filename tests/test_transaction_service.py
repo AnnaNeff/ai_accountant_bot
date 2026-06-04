@@ -63,6 +63,10 @@ def test_create_transaction_sets_manual_defaults() -> None:
     assert session.committed is True
     assert session.refreshed is transaction
     assert transaction.user_id == 7
+    assert transaction.amount_total == Decimal("42.50")
+    assert transaction.vat_relevant is False
+    assert transaction.business_use_percent == Decimal("100.00")
+    assert transaction.balance_impact_type == "business"
     assert transaction.currency == "ILS"
     assert transaction.source == "manual"
     assert transaction.status == "confirmed"

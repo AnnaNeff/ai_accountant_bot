@@ -29,6 +29,11 @@ async def create_or_update_financial_profile(
     profile.opening_balance = data.opening_balance
     profile.currency = data.currency
     profile.opening_balance_date = data.opening_balance_date
+    profile.business_type = data.business_type
+    profile.tax_country = data.tax_country
+    profile.default_vat_rate = data.default_vat_rate
+    profile.income_tax_reserve_percent = data.income_tax_reserve_percent
+    profile.bituach_leumi_reserve_percent = data.bituach_leumi_reserve_percent
 
     await session.commit()
     await session.refresh(profile)

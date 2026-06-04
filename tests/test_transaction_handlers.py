@@ -17,6 +17,10 @@ def test_parse_transaction_command_uses_manual_entry_defaults() -> None:
     assert isinstance(result, TransactionCreate)
     assert result.type == "income"
     assert result.amount == Decimal("1500")
+    assert result.amount_total == Decimal("1500")
+    assert result.vat_relevant is False
+    assert result.business_use_percent == Decimal("100.00")
+    assert result.balance_impact_type == "business"
     assert result.currency == "ILS"
     assert result.category is None
     assert result.description == "consulting payment"
@@ -40,6 +44,45 @@ def test_transaction_create_rejects_invalid_amount() -> None:
             type="expense",
             amount=Decimal("-1"),
             date=date(2026, 5, 8),
+        )
+
+
+def test_transaction_create_defaults_new_tax_fields_safely() -> None:
+    transaction = TransactionCreate(
+        type="expense",
+        amount=Decimal("86.40"),
+        date=date(2026, 5, 8),
+    )
+
+    assert transaction.amount_total == Decimal("86.40")
+    assert transaction.amount_net is None
+    assert transaction.vat_amount is None
+    assert transaction.vat_rate is None
+    assert transaction.vat_included is None
+    assert transaction.vat_relevant is False
+    assert transaction.business_use_percent == Decimal("100.00")
+    assert transaction.tax_deductible is None
+    assert transaction.tax_category is None
+    assert transaction.balance_impact_type == "business"
+
+
+def test_transaction_create_validates_business_use_percent() -> None:
+    with pytest.raises(ValueError, match="Business use percent must be between 0 and 100"):
+        TransactionCreate(
+            type="expense",
+            amount=Decimal("86.40"),
+            date=date(2026, 5, 8),
+            business_use_percent=Decimal("100.01"),
+        )
+
+
+def test_transaction_create_validates_balance_impact_type() -> None:
+    with pytest.raises(ValueError):
+        TransactionCreate(
+            type="expense",
+            amount=Decimal("86.40"),
+            date=date(2026, 5, 8),
+            balance_impact_type="invalid",  # type: ignore[arg-type]
         )
 
 

@@ -27,6 +27,28 @@ class FinancialProfile(Base):
         nullable=False,
     )
     opening_balance_date: Mapped[date] = mapped_column(Date, nullable=False)
+    business_type: Mapped[str] = mapped_column(
+        String(20),
+        server_default="unknown",
+        nullable=False,
+    )
+    tax_country: Mapped[str] = mapped_column(
+        String(2),
+        server_default="IL",
+        nullable=False,
+    )
+    default_vat_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 4),
+        nullable=True,
+    )
+    income_tax_reserve_percent: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 4),
+        nullable=True,
+    )
+    bituach_leumi_reserve_percent: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 4),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

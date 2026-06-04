@@ -413,6 +413,10 @@ def test_handle_ai_transaction_save_creates_transaction(
     assert created["user_id"] == 77
     assert transaction_data.type == "income"
     assert transaction_data.amount == Decimal("1500")
+    assert transaction_data.amount_total == Decimal("1500")
+    assert transaction_data.vat_relevant is False
+    assert transaction_data.business_use_percent == Decimal("100.00")
+    assert transaction_data.balance_impact_type == "business"
     assert transaction_data.currency == "ILS"
     assert transaction_data.date == date(2026, 5, 28)
     assert transaction_data.category == "services"

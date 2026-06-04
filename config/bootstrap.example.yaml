@@ -6,6 +6,14 @@ financial_profile:
   opening_balance: 10000.00
   currency: "ILS"
   opening_balance_date: "2026-05-01"
+  business_type: "osek_patur"
+  tax_country: "IL"
+  default_vat_rate: null
+  income_tax_reserve_percent: 0.10
+  bituach_leumi_reserve_percent: 0.12
+  # Another user may use:
+  # business_type: "osek_murshe"
+  # default_vat_rate: 0.18
 
 regular_income:
   - description: "Client payment"
