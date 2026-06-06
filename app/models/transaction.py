@@ -49,7 +49,7 @@ class Transaction(Base):
     category: Mapped[str | None] = mapped_column(String(255), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(
-        String(20),
+        String(30),
         server_default="manual",
         nullable=False,
     )

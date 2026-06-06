@@ -124,6 +124,25 @@ def test_balance_with_income_and_expense() -> None:
     assert summary.transactions_count == 2
 
 
+def test_balance_includes_confirmed_obligation_manual_payment() -> None:
+    session = FakeSession(
+        profile=make_profile(opening_balance=Decimal("2000.00")),
+        transactions=[
+            make_transaction(
+                type="expense",
+                amount=Decimal("650.00"),
+                source="obligation_manual_payment",
+                balance_impact_type="tax_payment",
+            )
+        ],
+    )
+
+    summary = asyncio.run(get_balance_summary(session, 1))  # type: ignore[arg-type]
+
+    assert summary.expense_total == Decimal("650.00")
+    assert summary.current_balance == Decimal("1350.00")
+
+
 def test_balance_ignores_transactions_from_other_users() -> None:
     session = FakeSession(
         profile=make_profile(opening_balance=Decimal("0.00")),

@@ -4,6 +4,19 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+PaymentBehavior = Literal["auto_pay", "manual_pay", "reserve_only"]
+ObligationType = Literal[
+    "regular",
+    "loan",
+    "rent",
+    "subscription",
+    "vat",
+    "income_tax",
+    "bituach_leumi",
+    "other_tax",
+    "other",
+]
+
 
 class RecurringRuleCreate(BaseModel):
     type: Literal["income", "expense"]
@@ -13,6 +26,9 @@ class RecurringRuleCreate(BaseModel):
     description: str
     frequency: Literal["monthly"]
     day_of_month: int = Field(ge=1, le=31)
+    payment_behavior: PaymentBehavior = "auto_pay"
+    obligation_type: ObligationType = "regular"
+    affects_balance_when_generated: bool = True
     start_date: date
     end_date: date | None = None
     active: bool = True
@@ -37,6 +53,9 @@ class RecurringRuleRead(BaseModel):
     description: str
     frequency: Literal["monthly"]
     day_of_month: int
+    payment_behavior: PaymentBehavior
+    obligation_type: ObligationType
+    affects_balance_when_generated: bool
     start_date: date
     end_date: date | None
     active: bool

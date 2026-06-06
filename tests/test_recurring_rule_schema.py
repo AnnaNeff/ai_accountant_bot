@@ -53,3 +53,21 @@ def test_recurring_rule_create_accepts_only_income_or_expense_type() -> None:
 
     with pytest.raises(ValueError):
         make_rule(type="transfer")
+
+
+def test_recurring_rule_create_validates_payment_behavior() -> None:
+    assert make_rule(payment_behavior="auto_pay").payment_behavior == "auto_pay"
+    assert make_rule(payment_behavior="manual_pay").payment_behavior == "manual_pay"
+    assert make_rule(payment_behavior="reserve_only").payment_behavior == "reserve_only"
+
+    with pytest.raises(ValueError):
+        make_rule(payment_behavior="automatic")
+
+
+def test_recurring_rule_create_validates_obligation_type() -> None:
+    assert make_rule(obligation_type="regular").obligation_type == "regular"
+    assert make_rule(obligation_type="vat").obligation_type == "vat"
+    assert make_rule(obligation_type="bituach_leumi").obligation_type == "bituach_leumi"
+
+    with pytest.raises(ValueError):
+        make_rule(obligation_type="unsupported_tax")

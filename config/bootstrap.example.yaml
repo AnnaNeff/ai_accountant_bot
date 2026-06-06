@@ -30,10 +30,24 @@ regular_expenses:
     frequency: "monthly"
     day_of_month: 1
     category: "rent"
+    payment_behavior: "auto_pay"
+    obligation_type: "rent"
 
   - description: "Loan payment"
     amount: 1200.00
     currency: "ILS"
     frequency: "monthly"
-    day_of_month: 15
+    day_of_month: 10
     category: "loan"
+    payment_behavior: "auto_pay"
+    obligation_type: "loan"
+
+  - description: "VAT reserve"
+    amount: 1.00
+    currency: "ILS"
+    frequency: "monthly"
+    day_of_month: 15
+    category: "tax"
+    payment_behavior: "reserve_only"
+    obligation_type: "vat"
+    affects_balance_when_generated: false

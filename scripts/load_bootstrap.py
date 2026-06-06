@@ -159,6 +159,10 @@ async def create_recurring_rule_if_missing(
             RecurringRule.description == data.description,
             RecurringRule.frequency == data.frequency,
             RecurringRule.day_of_month == data.day_of_month,
+            RecurringRule.payment_behavior == data.payment_behavior,
+            RecurringRule.obligation_type == data.obligation_type,
+            RecurringRule.affects_balance_when_generated
+            == data.affects_balance_when_generated,
             RecurringRule.start_date == data.start_date,
             RecurringRule.end_date == data.end_date,
         )
@@ -177,6 +181,9 @@ async def create_recurring_rule_if_missing(
         description=data.description,
         frequency=data.frequency,
         day_of_month=data.day_of_month,
+        payment_behavior=data.payment_behavior,
+        obligation_type=data.obligation_type,
+        affects_balance_when_generated=data.affects_balance_when_generated,
         start_date=data.start_date,
         end_date=data.end_date,
         active=data.active,

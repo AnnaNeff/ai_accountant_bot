@@ -7,6 +7,7 @@ from app.schemas.transaction import TransactionCreate
 from app.services.transaction_service import (
     create_transaction,
     get_last_transactions,
+    has_similar_obligation_payment_today,
 )
 
 
@@ -102,3 +103,37 @@ def test_get_last_transactions_caps_limit_and_orders_results() -> None:
     assert "WHERE transactions.user_id = 3" in sql
     assert "ORDER BY transactions.date DESC, transactions.created_at DESC" in sql
     assert "LIMIT 20" in sql
+
+
+def test_similar_obligation_payment_matches_description_containment() -> None:
+    session = FakeSession(
+        [
+            Transaction(
+                user_id=7,
+                type="expense",
+                amount=Decimal("1200.00"),
+                currency="ILS",
+                date=date(2026, 6, 6),
+                category="tax",
+                description="VAT payment May-June",
+                source="obligation_manual_payment",
+                status="confirmed",
+            )
+        ]
+    )
+
+    exists = asyncio.run(
+        has_similar_obligation_payment_today(
+            session,  # type: ignore[arg-type]
+            user_id=7,
+            amount=Decimal("1200.00"),
+            category="tax",
+            descriptions=("VAT payment", "VAT reserve"),
+            payment_date=date(2026, 6, 6),
+        )
+    )
+
+    assert exists is True
+    sql = str(session.statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "transactions.source = 'obligation_manual_payment'" in sql
+    assert "transactions.date = '2026-06-06'" in sql

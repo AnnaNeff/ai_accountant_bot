@@ -103,3 +103,21 @@ def test_format_last_transactions() -> None:
         "1. 2026-05-08 | expense | 86.40 ILS | office supplies"
     )
     assert format_last_transactions([]) == "No transactions yet."
+
+
+def test_format_last_transactions_shows_obligation_manual_payment() -> None:
+    transaction = Transaction(
+        user_id=1,
+        type="expense",
+        amount=Decimal("650.00"),
+        currency="ILS",
+        date=date(2026, 6, 6),
+        description="Bituach Leumi payment",
+        source="obligation_manual_payment",
+        status="confirmed",
+    )
+
+    assert format_last_transactions([transaction]) == (
+        "Last transactions:\n\n"
+        "1. 2026-06-06 | expense | 650.00 ILS | Bituach Leumi payment"
+    )
