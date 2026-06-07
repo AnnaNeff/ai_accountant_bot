@@ -2,12 +2,17 @@ import asyncio
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from app.models.transaction import Transaction
 from app.schemas.transaction import TransactionCreate
 from app.services.transaction_service import (
     create_transaction,
     get_last_transactions,
+    get_transaction_by_id,
     has_similar_obligation_payment_today,
+    update_transaction_tax_field,
+    validate_transaction_tax_field_value,
 )
 
 
@@ -25,6 +30,9 @@ class FakeResult:
 
     def scalars(self) -> FakeScalarResult:
         return FakeScalarResult(self.transactions)
+
+    def scalar_one_or_none(self) -> Transaction | None:
+        return self.transactions[0] if self.transactions else None
 
 
 class FakeSession:
@@ -135,6 +143,120 @@ def test_get_last_transactions_caps_limit_and_orders_results() -> None:
     assert "WHERE transactions.user_id = 3" in sql
     assert "ORDER BY transactions.date DESC, transactions.created_at DESC" in sql
     assert "LIMIT 20" in sql
+
+
+def test_get_transaction_by_id_filters_transaction_and_user() -> None:
+    transaction = Transaction(
+        id=123,
+        user_id=7,
+        type="expense",
+        amount=Decimal("10.00"),
+        date=date(2026, 6, 7),
+    )
+    session = FakeSession([transaction])
+
+    result = asyncio.run(
+        get_transaction_by_id(
+            session,  # type: ignore[arg-type]
+            user_id=7,
+            transaction_id=123,
+        )
+    )
+    sql = str(session.statement.compile(compile_kwargs={"literal_binds": True}))
+
+    assert result is transaction
+    assert "transactions.id = 123" in sql
+    assert "transactions.user_id = 7" in sql
+
+
+def test_update_transaction_tax_field_commits_and_refreshes() -> None:
+    transaction = Transaction(
+        id=123,
+        user_id=7,
+        type="expense",
+        amount=Decimal("10.00"),
+        date=date(2026, 6, 7),
+        vat_relevant=False,
+    )
+    session = FakeSession([transaction])
+
+    result = asyncio.run(
+        update_transaction_tax_field(
+            session,  # type: ignore[arg-type]
+            user_id=7,
+            transaction_id=123,
+            field="vat_relevant",
+            value=True,
+        )
+    )
+
+    assert result is transaction
+    assert transaction.vat_relevant is True
+    assert session.committed is True
+    assert session.refreshed is transaction
+
+
+def test_update_transaction_tax_field_rejects_forbidden_field() -> None:
+    session = FakeSession([])
+
+    try:
+        asyncio.run(
+            update_transaction_tax_field(
+                session,  # type: ignore[arg-type]
+                user_id=7,
+                transaction_id=123,
+                field="amount",
+                value=Decimal("999"),
+            )
+        )
+    except ValueError as error:
+        assert str(error) == "Unsupported transaction tax field."
+    else:
+        raise AssertionError("Forbidden field update was accepted.")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("amount_total", Decimal("-0.01")),
+        ("amount_net", Decimal("NaN")),
+        ("vat_amount", "18"),
+        ("vat_rate", Decimal("1.01")),
+        ("business_use_percent", Decimal("100.01")),
+        ("vat_included", 1),
+        ("vat_relevant", "true"),
+        ("tax_deductible", None),
+        ("tax_category", ""),
+        ("tax_category", "x" * 256),
+        ("balance_impact_type", "unknown"),
+    ],
+)
+def test_service_rejects_invalid_tax_field_values(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match="Invalid transaction tax field value"):
+        validate_transaction_tax_field_value(field, value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "id",
+        "user_id",
+        "type",
+        "amount",
+        "currency",
+        "date",
+        "source",
+        "status",
+        "created_at",
+        "updated_at",
+    ],
+)
+def test_service_rejects_all_forbidden_transaction_fields(field: str) -> None:
+    with pytest.raises(ValueError, match="Unsupported transaction tax field"):
+        validate_transaction_tax_field_value(field, "value")
 
 
 def test_similar_obligation_payment_matches_description_containment() -> None:

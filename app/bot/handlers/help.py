@@ -27,6 +27,8 @@ async def handle_help(message: Message) -> None:
         "/unlink_document document_id\n"
         "/income amount description\n"
         "/expense amount description\n"
+        "/transaction transaction_id\n"
+        "/set_transaction_tax transaction_id field value\n"
         "/ai_parse text\n"
         "/last"
     )

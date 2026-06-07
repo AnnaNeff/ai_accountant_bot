@@ -1,11 +1,66 @@
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.transaction import Transaction
 from app.schemas.transaction import TransactionCreate
+
+UPDATABLE_TRANSACTION_TAX_FIELDS = {
+    "amount_total",
+    "amount_net",
+    "vat_amount",
+    "vat_rate",
+    "vat_included",
+    "vat_relevant",
+    "business_use_percent",
+    "tax_deductible",
+    "tax_category",
+    "balance_impact_type",
+}
+DECIMAL_TRANSACTION_TAX_FIELD_RANGES = {
+    "amount_total": (Decimal("0"), None),
+    "amount_net": (Decimal("0"), None),
+    "vat_amount": (Decimal("0"), None),
+    "vat_rate": (Decimal("0"), Decimal("1")),
+    "business_use_percent": (Decimal("0"), Decimal("100")),
+}
+BOOLEAN_TRANSACTION_TAX_FIELDS = {
+    "vat_included",
+    "vat_relevant",
+    "tax_deductible",
+}
+BALANCE_IMPACT_TYPES = {
+    "business",
+    "personal",
+    "tax_payment",
+    "transfer",
+    "reserve_only",
+}
+
+
+def validate_transaction_tax_field_value(field: str, value: Any) -> None:
+    if field not in UPDATABLE_TRANSACTION_TAX_FIELDS:
+        raise ValueError("Unsupported transaction tax field.")
+
+    if field in DECIMAL_TRANSACTION_TAX_FIELD_RANGES:
+        if not isinstance(value, Decimal) or not value.is_finite():
+            raise ValueError("Invalid transaction tax field value.")
+        minimum, maximum = DECIMAL_TRANSACTION_TAX_FIELD_RANGES[field]
+        if value < minimum or maximum is not None and value > maximum:
+            raise ValueError("Invalid transaction tax field value.")
+    elif field in BOOLEAN_TRANSACTION_TAX_FIELDS:
+        if not isinstance(value, bool):
+            raise ValueError("Invalid transaction tax field value.")
+    elif field == "tax_category":
+        if value is not None and (
+            not isinstance(value, str) or not value or len(value) > 255
+        ):
+            raise ValueError("Invalid transaction tax field value.")
+    elif field == "balance_impact_type" and value not in BALANCE_IMPACT_TYPES:
+        raise ValueError("Invalid transaction tax field value.")
 
 
 async def create_transaction(
@@ -59,6 +114,43 @@ async def get_last_transactions(
         .limit(bounded_limit)
     )
     return list(result.scalars().all())
+
+
+async def get_transaction_by_id(
+    session: AsyncSession,
+    user_id: int,
+    transaction_id: int,
+) -> Transaction | None:
+    result = await session.execute(
+        select(Transaction).where(
+            Transaction.id == transaction_id,
+            Transaction.user_id == user_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def update_transaction_tax_field(
+    session: AsyncSession,
+    user_id: int,
+    transaction_id: int,
+    field: str,
+    value: Any,
+) -> Transaction | None:
+    validate_transaction_tax_field_value(field, value)
+
+    transaction = await get_transaction_by_id(
+        session,
+        user_id=user_id,
+        transaction_id=transaction_id,
+    )
+    if transaction is None:
+        return None
+
+    setattr(transaction, field, value)
+    await session.commit()
+    await session.refresh(transaction)
+    return transaction
 
 
 async def has_similar_obligation_payment_today(
