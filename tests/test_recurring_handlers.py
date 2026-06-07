@@ -10,10 +10,12 @@ from app.bot.handlers import recurring
 from app.bot.handlers.recurring import (
     PAY_OBLIGATION_USAGE,
     format_generation_result,
+    format_obligation_payments,
     format_obligations,
     format_recurring_rules,
     parse_pay_obligation_command,
 )
+from app.models.obligation_payment import ObligationPayment
 from app.models.recurring_rule import RecurringRule
 
 
@@ -107,16 +109,37 @@ class FakeSessionContext:
 
 def test_parse_pay_obligation_command_validates_format() -> None:
     assert parse_pay_obligation_command("/pay_obligation") == PAY_OBLIGATION_USAGE
-    assert parse_pay_obligation_command("/pay_obligation five 1200") == PAY_OBLIGATION_USAGE
-    assert parse_pay_obligation_command("/pay_obligation 5 zero") == PAY_OBLIGATION_USAGE
-    assert parse_pay_obligation_command("/pay_obligation 5 0") == PAY_OBLIGATION_USAGE
+    assert (
+        parse_pay_obligation_command("/pay_obligation 5 1200 VAT payment")
+        == PAY_OBLIGATION_USAGE
+    )
+    assert (
+        parse_pay_obligation_command(
+            "/pay_obligation five 1200 2026-05-01 2026-06-30"
+        )
+        == PAY_OBLIGATION_USAGE
+    )
+    assert (
+        parse_pay_obligation_command(
+            "/pay_obligation 5 0 2026-05-01 2026-06-30"
+        )
+        == PAY_OBLIGATION_USAGE
+    )
+    assert (
+        parse_pay_obligation_command(
+            "/pay_obligation 5 1200 2026-06-30 2026-05-01"
+        )
+        == PAY_OBLIGATION_USAGE
+    )
 
     command = parse_pay_obligation_command(
-        "/pay_obligation 5 1200 VAT payment May-June"
+        "/pay_obligation 5 1200 2026-05-01 2026-06-30 VAT payment May-June"
     )
     assert not isinstance(command, str)
     assert command.rule_id == 5
     assert command.amount == Decimal("1200")
+    assert command.period_start == date(2026, 5, 1)
+    assert command.period_end == date(2026, 6, 30)
     assert command.description == "VAT payment May-June"
 
 
@@ -139,12 +162,12 @@ def setup_payment_handler(
         assert kwargs["rule_id"] == 5
         return rule
 
-    async def fake_has_similar_obligation_payment_today(
+    async def fake_find_existing_paid_obligation_payment(
         session: object,
         **kwargs: Any,
-    ) -> bool:
+    ) -> object | None:
         created["duplicate_check"] = kwargs
-        return duplicate
+        return SimpleNamespace(id=99) if duplicate else None
 
     async def fake_create_transaction(
         session: object,
@@ -157,6 +180,13 @@ def setup_payment_handler(
             currency=kwargs["data"].currency,
         )
 
+    async def fake_create_obligation_payment(
+        session: object,
+        **kwargs: Any,
+    ) -> Any:
+        created["payment"] = kwargs
+        return SimpleNamespace(id=77)
+
     monkeypatch.setattr(recurring, "async_session_factory", FakeSessionContext)
     monkeypatch.setattr(recurring, "get_or_create_user", fake_get_or_create_user)
     monkeypatch.setattr(
@@ -166,17 +196,24 @@ def setup_payment_handler(
     )
     monkeypatch.setattr(
         recurring,
-        "has_similar_obligation_payment_today",
-        fake_has_similar_obligation_payment_today,
+        "find_existing_paid_obligation_payment",
+        fake_find_existing_paid_obligation_payment,
     )
     monkeypatch.setattr(recurring, "create_transaction", fake_create_transaction)
+    monkeypatch.setattr(
+        recurring,
+        "create_obligation_payment",
+        fake_create_obligation_payment,
+    )
     return created
 
 
 def test_pay_obligation_unknown_rule_returns_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    message = FakeMessage("/pay_obligation 5 1200 VAT payment")
+    message = FakeMessage(
+        "/pay_obligation 5 1200 2026-05-01 2026-06-30 VAT payment"
+    )
     setup_payment_handler(monkeypatch, None)
 
     asyncio.run(recurring.handle_pay_obligation(message))  # type: ignore[arg-type]
@@ -203,7 +240,9 @@ def test_pay_obligation_rejects_non_manual_rules(
     behavior: str,
     expected: str,
 ) -> None:
-    message = FakeMessage("/pay_obligation 5 1200 payment")
+    message = FakeMessage(
+        "/pay_obligation 5 1200 2026-05-01 2026-06-30 payment"
+    )
     rule = make_rule(id=5, payment_behavior=behavior)
     created = setup_payment_handler(monkeypatch, rule)
 
@@ -228,7 +267,9 @@ def test_pay_obligation_manual_rule_creates_confirmed_transaction(
     obligation_type: str,
     expected_impact: str,
 ) -> None:
-    message = FakeMessage("/pay_obligation 5 1200 Paid obligation")
+    message = FakeMessage(
+        "/pay_obligation 5 1200 2026-05-01 2026-06-30 Paid obligation"
+    )
     rule = make_rule(
         id=5,
         payment_behavior="manual_pay",
@@ -243,6 +284,7 @@ def test_pay_obligation_manual_rule_creates_confirmed_transaction(
     assert created["user_id"] == 7
     assert created["source"] == "obligation_manual_payment"
     assert created["status"] == "confirmed"
+    assert created["commit"] is False
     assert data.type == "expense"
     assert data.amount == Decimal("1200")
     assert data.amount_total == Decimal("1200")
@@ -251,6 +293,16 @@ def test_pay_obligation_manual_rule_creates_confirmed_transaction(
     assert data.category == rule.category
     assert data.description == "Paid obligation"
     assert data.balance_impact_type == expected_impact
+    payment_data = created["payment"]["data"]
+    assert created["payment"]["user_id"] == 7
+    assert payment_data.recurring_rule_id == 5
+    assert payment_data.transaction_id == 123
+    assert payment_data.period_start == date(2026, 5, 1)
+    assert payment_data.period_end == date(2026, 6, 30)
+    assert payment_data.amount == Decimal("1200")
+    assert payment_data.currency == "ILS"
+    assert payment_data.status == "paid"
+    assert payment_data.notes == "Paid obligation"
     assert message.answers == [
         "Obligation payment saved.\n\n"
         "Rule ID: 5\n"
@@ -263,7 +315,9 @@ def test_pay_obligation_manual_rule_creates_confirmed_transaction(
 def test_pay_obligation_uses_rule_description_when_description_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    message = FakeMessage("/pay_obligation 5 650")
+    message = FakeMessage(
+        "/pay_obligation 5 650 2026-06-01 2026-06-30"
+    )
     rule = make_rule(
         id=5,
         description="Bituach Leumi",
@@ -280,7 +334,9 @@ def test_pay_obligation_uses_rule_description_when_description_is_missing(
 def test_pay_obligation_rejects_unexpected_payment_behavior(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    message = FakeMessage("/pay_obligation 5 1200 payment")
+    message = FakeMessage(
+        "/pay_obligation 5 1200 2026-05-01 2026-06-30 payment"
+    )
     rule = make_rule(id=5, payment_behavior="unexpected")
     created = setup_payment_handler(monkeypatch, rule)
 
@@ -293,7 +349,9 @@ def test_pay_obligation_rejects_unexpected_payment_behavior(
 def test_pay_obligation_duplicate_is_not_created(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    message = FakeMessage("/pay_obligation 5 1200 VAT payment")
+    message = FakeMessage(
+        "/pay_obligation 5 1200 2026-05-01 2026-06-30 VAT payment"
+    )
     rule = make_rule(
         id=5,
         payment_behavior="manual_pay",
@@ -305,6 +363,86 @@ def test_pay_obligation_duplicate_is_not_created(
     asyncio.run(recurring.handle_pay_obligation(message))  # type: ignore[arg-type]
 
     assert message.answers == [
-        "Similar obligation payment already exists today. Not created."
+        "Obligation payment for this period already exists. Not created."
     ]
     assert "data" not in created
+    assert "payment" not in created
+
+
+def test_format_obligation_payments_shows_recent_payments() -> None:
+    payments = [
+        ObligationPayment(
+            user_id=7,
+            recurring_rule_id=5,
+            transaction_id=123,
+            period_start=date(2026, 5, 1),
+            period_end=date(2026, 6, 30),
+            amount=Decimal("1200.00"),
+            currency="ILS",
+            status="paid",
+        ),
+        ObligationPayment(
+            user_id=7,
+            recurring_rule_id=7,
+            transaction_id=124,
+            period_start=date(2026, 6, 1),
+            period_end=date(2026, 6, 30),
+            amount=Decimal("650.00"),
+            currency="ILS",
+            status="paid",
+        ),
+    ]
+
+    assert format_obligation_payments(payments) == (
+        "Obligation payments:\n\n"
+        "1. paid | rule 5 | 2026-05-01..2026-06-30 | "
+        "1,200.00 ILS | transaction 123\n"
+        "2. paid | rule 7 | 2026-06-01..2026-06-30 | "
+        "650.00 ILS | transaction 124"
+    )
+
+
+def test_format_obligation_payments_empty_message() -> None:
+    assert format_obligation_payments([]) == "No obligation payments yet."
+
+
+def test_handle_obligation_payments_shows_recent_user_payments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage("/obligation_payments")
+    payment = ObligationPayment(
+        user_id=7,
+        recurring_rule_id=5,
+        transaction_id=123,
+        period_start=date(2026, 5, 1),
+        period_end=date(2026, 6, 30),
+        amount=Decimal("1200.00"),
+        currency="ILS",
+        status="paid",
+    )
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_recent_obligation_payments(
+        session: object,
+        **kwargs: Any,
+    ) -> list[ObligationPayment]:
+        assert kwargs == {"user_id": 7, "limit": 10}
+        return [payment]
+
+    monkeypatch.setattr(recurring, "async_session_factory", FakeSessionContext)
+    monkeypatch.setattr(recurring, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(
+        recurring,
+        "get_recent_obligation_payments",
+        fake_get_recent_obligation_payments,
+    )
+
+    asyncio.run(recurring.handle_obligation_payments(message))  # type: ignore[arg-type]
+
+    assert message.answers == [
+        "Obligation payments:\n\n"
+        "1. paid | rule 5 | 2026-05-01..2026-06-30 | "
+        "1,200.00 ILS | transaction 123"
+    ]

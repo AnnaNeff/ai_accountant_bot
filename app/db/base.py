@@ -6,4 +6,11 @@ class Base(DeclarativeBase):
 
 
 # Import mapped classes so Alembic receives complete Base.metadata.
-from app.models import document, financial_profile, recurring_rule, transaction, user  # noqa: E402, F401
+from app.models import (  # noqa: E402, F401
+    document,
+    financial_profile,
+    obligation_payment,
+    recurring_rule,
+    transaction,
+    user,
+)

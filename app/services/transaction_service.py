@@ -14,6 +14,7 @@ async def create_transaction(
     data: TransactionCreate,
     source: str = "manual",
     status: str = "confirmed",
+    commit: bool = True,
 ) -> Transaction:
     transaction = Transaction(
         user_id=user_id,
@@ -37,8 +38,11 @@ async def create_transaction(
         status=status,
     )
     session.add(transaction)
-    await session.commit()
-    await session.refresh(transaction)
+    if commit:
+        await session.commit()
+        await session.refresh(transaction)
+    else:
+        await session.flush()
     return transaction
 
 

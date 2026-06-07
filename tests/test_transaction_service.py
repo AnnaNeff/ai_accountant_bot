@@ -32,6 +32,7 @@ class FakeSession:
         self.added: Transaction | None = None
         self.committed = False
         self.refreshed: Transaction | None = None
+        self.flushed = False
         self.statement = None
         self.transactions = transactions or []
 
@@ -43,6 +44,11 @@ class FakeSession:
 
     async def refresh(self, transaction: Transaction) -> None:
         self.refreshed = transaction
+
+    async def flush(self) -> None:
+        self.flushed = True
+        if self.added is not None and self.added.id is None:
+            self.added.id = 123
 
     async def execute(self, statement: object) -> FakeResult:
         self.statement = statement
@@ -90,6 +96,32 @@ def test_create_transaction_accepts_custom_source() -> None:
 
     assert transaction.source == "ai_text"
     assert transaction.status == "confirmed"
+
+
+def test_create_transaction_can_defer_commit_for_atomic_linked_record() -> None:
+    session = FakeSession()
+    data = TransactionCreate(
+        type="expense",
+        amount=Decimal("1200.00"),
+        date=date(2026, 6, 6),
+        description="VAT payment",
+    )
+
+    transaction = asyncio.run(
+        create_transaction(
+            session,  # type: ignore[arg-type]
+            user_id=7,
+            data=data,
+            source="obligation_manual_payment",
+            status="confirmed",
+            commit=False,
+        )
+    )
+
+    assert transaction.id == 123
+    assert session.flushed is True
+    assert session.committed is False
+    assert session.refreshed is None
 
 
 def test_get_last_transactions_caps_limit_and_orders_results() -> None:
