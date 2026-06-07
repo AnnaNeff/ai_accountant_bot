@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PaymentBehavior = Literal["auto_pay", "manual_pay", "reserve_only"]
 ObligationType = Literal[
@@ -26,12 +26,22 @@ class RecurringRuleCreate(BaseModel):
     description: str
     frequency: Literal["monthly"]
     day_of_month: int = Field(ge=1, le=31)
+    period_months: int = Field(default=1, ge=1, le=12)
+    due_day: int | None = Field(default=None, ge=1, le=31)
+    due_month_offset: int = Field(default=0, ge=0, le=12)
     payment_behavior: PaymentBehavior = "auto_pay"
     obligation_type: ObligationType = "regular"
     affects_balance_when_generated: bool = True
     start_date: date
     end_date: date | None = None
     active: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_due_day_to_generation_day(cls, data: object) -> object:
+        if isinstance(data, dict) and "due_day" not in data:
+            return {**data, "due_day": data.get("day_of_month")}
+        return data
 
     @field_validator("amount")
     @classmethod
@@ -53,6 +63,9 @@ class RecurringRuleRead(BaseModel):
     description: str
     frequency: Literal["monthly"]
     day_of_month: int
+    period_months: int
+    due_day: int | None
+    due_month_offset: int
     payment_behavior: PaymentBehavior
     obligation_type: ObligationType
     affects_balance_when_generated: bool

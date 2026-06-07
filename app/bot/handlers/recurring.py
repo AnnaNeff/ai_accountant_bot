@@ -16,6 +16,10 @@ from app.services.obligation_payment_service import (
     find_existing_paid_obligation_payment,
     get_recent_obligation_payments,
 )
+from app.services.obligation_status_service import (
+    ExpectedObligationPeriod,
+    get_obligation_statuses,
+)
 from app.services.recurring_service import (
     generate_recurring_transactions,
     get_active_recurring_rules,
@@ -135,6 +139,25 @@ def format_obligation_payments(payments: list[ObligationPayment]) -> str:
     return "\n".join(rows)
 
 
+def format_obligation_statuses(
+    statuses: list[ExpectedObligationPeriod],
+) -> str:
+    if not statuses:
+        return "No obligation periods found."
+
+    rows = ["Obligation status:", ""]
+    for number, item in enumerate(statuses, start=1):
+        payment_detail = f"{item.amount:,.2f} {item.currency}"
+        if item.status == "paid" and item.transaction_id is not None:
+            payment_detail += f" | transaction {item.transaction_id}"
+        rows.append(
+            f"{number}. {item.description} | {item.obligation_type} | "
+            f"{item.period_start.isoformat()}..{item.period_end.isoformat()} | "
+            f"due {item.due_date.isoformat()} | {item.status} | {payment_detail}"
+        )
+    return "\n".join(rows)
+
+
 @router.message(Command("recurring"))
 async def handle_recurring(message: Message) -> None:
     if message.from_user is None:
@@ -185,6 +208,26 @@ async def handle_obligation_payments(message: Message) -> None:
         )
 
     await message.answer(format_obligation_payments(payments))
+
+
+@router.message(Command("obligation_status"))
+async def handle_obligation_status(message: Message) -> None:
+    if message.from_user is None:
+        return
+
+    async with async_session_factory() as session:
+        user = await get_or_create_user(
+            session=session,
+            telegram_user_id=message.from_user.id,
+            name=message.from_user.full_name,
+        )
+        statuses = await get_obligation_statuses(
+            session,
+            user_id=user.id,
+            today=date.today(),
+        )
+
+    await message.answer(format_obligation_statuses(statuses))
 
 
 @router.message(Command("generate_recurring"))

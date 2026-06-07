@@ -42,12 +42,26 @@ regular_expenses:
     payment_behavior: "auto_pay"
     obligation_type: "loan"
 
-  - description: "VAT reserve"
+  - description: "VAT payment"
     amount: 1.00
     currency: "ILS"
     frequency: "monthly"
     day_of_month: 15
     category: "tax"
-    payment_behavior: "reserve_only"
+    payment_behavior: "manual_pay"
     obligation_type: "vat"
-    affects_balance_when_generated: false
+    period_months: 2
+    due_day: 15
+    due_month_offset: 1
+
+  - description: "Bituach Leumi"
+    amount: 1.00
+    currency: "ILS"
+    frequency: "monthly"
+    day_of_month: 15
+    category: "tax"
+    payment_behavior: "manual_pay"
+    obligation_type: "bituach_leumi"
+    period_months: 1
+    due_day: 15
+    due_month_offset: 0

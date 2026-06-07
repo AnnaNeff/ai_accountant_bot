@@ -71,3 +71,28 @@ def test_recurring_rule_create_validates_obligation_type() -> None:
 
     with pytest.raises(ValueError):
         make_rule(obligation_type="unsupported_tax")
+
+
+def test_recurring_rule_create_validates_period_months() -> None:
+    assert make_rule(period_months=12).period_months == 12
+    with pytest.raises(ValueError):
+        make_rule(period_months=0)
+    with pytest.raises(ValueError):
+        make_rule(period_months=13)
+
+
+def test_recurring_rule_create_validates_due_day() -> None:
+    assert make_rule(due_day=31).due_day == 31
+    assert make_rule(due_day=None).due_day is None
+    with pytest.raises(ValueError):
+        make_rule(due_day=0)
+    with pytest.raises(ValueError):
+        make_rule(due_day=32)
+
+
+def test_recurring_rule_create_validates_due_month_offset() -> None:
+    assert make_rule(due_month_offset=12).due_month_offset == 12
+    with pytest.raises(ValueError):
+        make_rule(due_month_offset=-1)
+    with pytest.raises(ValueError):
+        make_rule(due_month_offset=13)

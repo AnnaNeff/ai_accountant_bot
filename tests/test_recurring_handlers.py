@@ -11,12 +11,14 @@ from app.bot.handlers.recurring import (
     PAY_OBLIGATION_USAGE,
     format_generation_result,
     format_obligation_payments,
+    format_obligation_statuses,
     format_obligations,
     format_recurring_rules,
     parse_pay_obligation_command,
 )
 from app.models.obligation_payment import ObligationPayment
 from app.models.recurring_rule import RecurringRule
+from app.services.obligation_status_service import ExpectedObligationPeriod
 
 
 def make_rule(**overrides: object) -> RecurringRule:
@@ -446,3 +448,123 @@ def test_handle_obligation_payments_shows_recent_user_payments(
         "1. paid | rule 5 | 2026-05-01..2026-06-30 | "
         "1,200.00 ILS | transaction 123"
     ]
+
+
+def make_status(**overrides: object) -> ExpectedObligationPeriod:
+    data = {
+        "rule_id": 5,
+        "description": "VAT payment",
+        "obligation_type": "vat",
+        "payment_behavior": "manual_pay",
+        "period_start": date(2026, 5, 1),
+        "period_end": date(2026, 6, 30),
+        "due_date": date(2026, 7, 15),
+        "status": "unpaid",
+        "amount": Decimal("1.00"),
+        "currency": "ILS",
+        "transaction_id": None,
+    }
+    data.update(overrides)
+    return ExpectedObligationPeriod(**data)  # type: ignore[arg-type]
+
+
+def test_format_obligation_statuses_shows_all_statuses() -> None:
+    statuses = [
+        make_status(),
+        make_status(
+            rule_id=6,
+            description="Bituach Leumi",
+            obligation_type="bituach_leumi",
+            period_start=date(2026, 6, 1),
+            due_date=date(2026, 6, 15),
+            status="paid",
+            transaction_id=123,
+        ),
+        make_status(
+            rule_id=7,
+            description="Income tax",
+            obligation_type="income_tax",
+            period_start=date(2026, 4, 1),
+            due_date=date(2026, 7, 15),
+            status="overdue",
+        ),
+    ]
+
+    assert format_obligation_statuses(statuses) == (
+        "Obligation status:\n\n"
+        "1. VAT payment | vat | 2026-05-01..2026-06-30 | "
+        "due 2026-07-15 | unpaid | 1.00 ILS\n"
+        "2. Bituach Leumi | bituach_leumi | 2026-06-01..2026-06-30 | "
+        "due 2026-06-15 | paid | 1.00 ILS | transaction 123\n"
+        "3. Income tax | income_tax | 2026-04-01..2026-06-30 | "
+        "due 2026-07-15 | overdue | 1.00 ILS"
+    )
+
+
+def test_format_obligation_statuses_empty_message() -> None:
+    assert format_obligation_statuses([]) == "No obligation periods found."
+
+
+def test_handle_obligation_status_is_read_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage("/obligation_status")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_obligation_statuses(
+        session: object,
+        **kwargs: Any,
+    ) -> list[ExpectedObligationPeriod]:
+        assert kwargs["user_id"] == 7
+        assert kwargs["today"] == date.today()
+        return [make_status(status="overdue")]
+
+    async def fail_create(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("Status command must not create records.")
+
+    monkeypatch.setattr(recurring, "async_session_factory", FakeSessionContext)
+    monkeypatch.setattr(recurring, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(
+        recurring,
+        "get_obligation_statuses",
+        fake_get_obligation_statuses,
+    )
+    monkeypatch.setattr(recurring, "create_transaction", fail_create)
+    monkeypatch.setattr(recurring, "create_obligation_payment", fail_create)
+
+    asyncio.run(recurring.handle_obligation_status(message))  # type: ignore[arg-type]
+
+    assert message.answers == [
+        "Obligation status:\n\n"
+        "1. VAT payment | vat | 2026-05-01..2026-06-30 | "
+        "due 2026-07-15 | overdue | 1.00 ILS"
+    ]
+
+
+def test_handle_obligation_status_empty_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    message = FakeMessage("/obligation_status")
+
+    async def fake_get_or_create_user(**kwargs: Any) -> Any:
+        return SimpleNamespace(id=7)
+
+    async def fake_get_obligation_statuses(
+        session: object,
+        **kwargs: Any,
+    ) -> list[ExpectedObligationPeriod]:
+        return []
+
+    monkeypatch.setattr(recurring, "async_session_factory", FakeSessionContext)
+    monkeypatch.setattr(recurring, "get_or_create_user", fake_get_or_create_user)
+    monkeypatch.setattr(
+        recurring,
+        "get_obligation_statuses",
+        fake_get_obligation_statuses,
+    )
+
+    asyncio.run(recurring.handle_obligation_status(message))  # type: ignore[arg-type]
+
+    assert message.answers == ["No obligation periods found."]

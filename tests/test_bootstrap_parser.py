@@ -22,8 +22,10 @@ def test_bootstrap_example_yaml_can_be_parsed() -> None:
         "expense",
         "expense",
         "expense",
+        "expense",
     ]
     assert [rule.frequency for rule in data.recurring_rules] == [
+        "monthly",
         "monthly",
         "monthly",
         "monthly",
@@ -33,14 +35,22 @@ def test_bootstrap_example_yaml_can_be_parsed() -> None:
         "auto_pay",
         "auto_pay",
         "auto_pay",
-        "reserve_only",
+        "manual_pay",
+        "manual_pay",
     ]
     assert [rule.obligation_type for rule in data.recurring_rules] == [
         "regular",
         "rent",
         "loan",
         "vat",
+        "bituach_leumi",
     ]
+    assert data.recurring_rules[3].period_months == 2
+    assert data.recurring_rules[3].due_day == 15
+    assert data.recurring_rules[3].due_month_offset == 1
+    assert data.recurring_rules[4].period_months == 1
+    assert data.recurring_rules[4].due_day == 15
+    assert data.recurring_rules[4].due_month_offset == 0
 
 
 def test_bootstrap_financial_profile_new_fields_are_optional() -> None:
@@ -88,3 +98,6 @@ def test_bootstrap_old_recurring_rules_get_obligation_defaults() -> None:
     assert rule.payment_behavior == "auto_pay"
     assert rule.obligation_type == "regular"
     assert rule.affects_balance_when_generated is True
+    assert rule.period_months == 1
+    assert rule.due_day == 1
+    assert rule.due_month_offset == 0

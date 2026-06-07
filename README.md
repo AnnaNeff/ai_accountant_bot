@@ -1,209 +1,217 @@
 # AI Accountant Bot
 
-Minimal working Telegram bot skeleton for a personal accounting assistant.
+Личный Telegram-бот для учета доходов, расходов, документов и финансовых
+обязательств. Проект развивается в сторону налогового планирования и расчета
+свободного бюджета, но не заменяет бухгалтера и не выполняет официальную
+налоговую отчетность.
 
-## Stack
+Актуальное состояние проекта: завершены этапы 1–8D. Следующий этап —
+формирование ожидаемых периодов обязательств и статусов
+`paid` / `unpaid` / `overdue`.
 
-- Python 3.13 in Docker, Python 3.11+ for local development
-- aiogram 3
-- pydantic-settings
-- SQLAlchemy 2
-- Alembic
-- PostgreSQL
-- Docker Compose
-- Tesseract OCR
-- pytest
+## Что уже работает
 
-## Recommended Docker Run
+- доступ к боту только для Telegram-пользователей из allowlist;
+- ручной ввод доходов и расходов;
+- финансовый профиль, начальный баланс и текущий баланс;
+- регулярные правила и генерация `auto_pay`-операций;
+- обязательства с режимами `auto_pay`, `manual_pay`, `reserve_only`;
+- ручная оплата обязательств с указанием отчетного периода;
+- проверка в `/pay_obligation`, не позволяющая повторно оплатить тот же период;
+- AI-извлечение операции из текста через Groq;
+- Save/Cancel-подтверждение AI-операции;
+- прием и локальное хранение документов;
+- OCR через Tesseract;
+- AI-preview операции по OCR-тексту;
+- Save/Cancel-подтверждение операции из документа;
+- связь документа с транзакцией и защита от повторного создания операции;
+- бизнес-профиль и налоговые поля транзакций.
 
-Docker Compose is the primary runtime for the project. It starts PostgreSQL and
-the Telegram bot container, and the bot image includes the Tesseract OCR binary.
+Полный документный flow:
 
-Create a private `.env` from the example and fill in real credentials:
+```text
+Фото -> Document -> OCR -> AI parse -> preview -> Save/Cancel
+     -> Transaction + linked document
+```
+
+## Что пока не реализовано
+
+- ожидаемые периоды обязательств и команда `/obligation_status`;
+- просмотр и ручное редактирование налоговой классификации транзакций;
+- VAT estimate, резервы income tax и Bituach Leumi;
+- единый `/tax_summary`;
+- reconciliation личных расходов;
+- расчет `/available`;
+- AI-консультант по бизнес-расходам;
+- отчеты, экспорт, audit log, soft delete и зашифрованные бэкапы.
+
+Актуальная последовательность работ описана в
+[`docs/development_plan.md`](docs/development_plan.md). Назначение и границы
+системы описаны в [`docs/project_description.md`](docs/project_description.md).
+
+## Стек
+
+- Python 3.13 в Docker, Python 3.11+ для локальной разработки;
+- aiogram 3;
+- SQLAlchemy 2 и Alembic;
+- PostgreSQL 16;
+- pydantic-settings;
+- Groq через OpenAI-compatible API;
+- Tesseract OCR и pytesseract;
+- Docker Compose;
+- pytest.
+
+## Запуск через Docker
+
+Docker Compose — основной способ запуска.
+
+1. Создать приватный `.env`:
 
 ```bash
 cp .env.example .env
 ```
 
-At minimum, set:
+2. Заполнить минимум:
 
-- `TELEGRAM_BOT_TOKEN`
-- `ALLOWED_TELEGRAM_USER_IDS`
-- `GROQ_API_KEY` if AI features are used
+```text
+TELEGRAM_BOT_TOKEN
+ALLOWED_TELEGRAM_USER_IDS
+GROQ_API_KEY
+```
 
-Start the project:
+3. Запустить PostgreSQL и бота:
 
 ```bash
 docker compose up --build
 ```
 
-Apply database migrations from another terminal:
+4. Применить миграции в другом терминале:
 
 ```bash
 docker compose exec bot alembic upgrade head
 ```
 
-Alternatively, run migrations in a one-off bot container:
+Если контейнер бота не запущен:
 
 ```bash
 docker compose run --rm bot alembic upgrade head
 ```
 
-The bot service overrides `DATABASE_URL` inside Docker to connect to the
-Compose `db` host:
+В Docker бот подключается к базе по адресу:
 
 ```text
-postgresql+asyncpg://ai_accountant:ai_accountant@db:5432/ai_accountant
+postgresql+asyncpg://ai_accountant:<password>@db:5432/ai_accountant
 ```
 
-Documents are stored on the host at `./data/private/documents` and mounted into
-the bot container at `/app/data/private/documents`. Keep
-`DOCUMENT_STORAGE_PATH=data/private/documents`.
+Документы сохраняются на хосте в `./data/private/documents` и монтируются в
+контейнер как `/app/data/private/documents`.
 
-Check that Tesseract is available inside the bot image:
+Проверка OCR:
 
 ```bash
 docker compose run --rm bot tesseract --version
 ```
 
-Run tests:
+Запуск тестов:
 
 ```bash
 docker compose run --rm bot pytest
 ```
 
-## Optional Local Development Run
-
-Local `.venv` execution is still supported, but Docker is the official runtime.
-
-Create and activate a virtual environment:
+## Локальная разработка
 
 ```bash
 python3.13 -m venv .venv
 source .venv/bin/activate
-```
-
-Install dependencies:
-
-```bash
 pip install -e ".[dev]"
 ```
 
-OCR image extraction uses `pytesseract`, which requires the system Tesseract
-OCR binary. On macOS install it with:
+Для OCR нужен системный Tesseract. На macOS:
 
 ```bash
 brew install tesseract
 ```
 
-The project uses a local `.env` file for real credentials and runtime
-configuration. The file is intentionally excluded by `.gitignore` and must not
-be committed or shared.
-
-Ensure the local `.env` contains:
-
-- `TELEGRAM_BOT_TOKEN` with the token issued by BotFather.
-- `ALLOWED_TELEGRAM_USER_IDS` with one or more comma-separated Telegram user
-  ids allowed to access the bot.
-- `DATABASE_URL` using the async PostgreSQL driver and `localhost`.
-- `GROQ_API_KEY` with the API key used for AI features.
-- `LOG_LEVEL` if a non-default log level is needed.
-- `DOCUMENT_STORAGE_PATH=data/private/documents`.
-- `OCR_LANGUAGES` for Tesseract OCR languages, defaulting to `eng`.
-
-Start PostgreSQL:
+Запустить только PostgreSQL, применить миграции и запустить бота:
 
 ```bash
 docker compose up -d db
-```
-
-Apply database migrations:
-
-```bash
 .venv/bin/alembic upgrade head
-```
-
-Run tests:
-
-```bash
-.venv/bin/pytest
-```
-
-Run the bot:
-
-```bash
 .venv/bin/python -m app.main
 ```
 
-Open Telegram and send:
+Локальный `DATABASE_URL` должен использовать `localhost` и драйвер
+`postgresql+asyncpg`.
 
-```text
-/start
-```
+## Начальные данные
 
-Expected response for an allowed user:
-
-```text
-AI Accountant Bot is running. Access confirmed.
-```
-
-For a user id not listed in `ALLOWED_TELEGRAM_USER_IDS`, the bot responds:
-
-```text
-Access denied.
-```
-
-## Check User Creation
-
-After sending `/start` from an allowed Telegram account, connect to PostgreSQL:
-
-```bash
-docker compose exec db psql -U ai_accountant -d ai_accountant
-```
-
-Run:
-
-```sql
-select id, telegram_user_id, name, created_at, updated_at from users;
-```
-
-The table should contain a row with your Telegram user id.
-
-## Bootstrap Financial Data
-
-Create a private bootstrap file from the example:
+Создать приватный bootstrap-файл:
 
 ```bash
 cp config/bootstrap.example.yaml config/private/bootstrap.yaml
 ```
 
-Edit `config/private/bootstrap.yaml` and replace `owner.telegram_user_id` with
-your Telegram user id. Keep this file private; `config/private/*.yaml` is
-ignored by Git.
-
-Load the bootstrap data:
+Указать Telegram ID владельца, финансовый профиль и recurring rules, затем
+загрузить данные:
 
 ```bash
-.venv/bin/python scripts/load_bootstrap.py --file config/private/bootstrap.yaml
+.venv/bin/python scripts/load_bootstrap.py \
+  --file config/private/bootstrap.yaml
 ```
 
-The loader creates or finds the user, creates or updates the financial profile,
-and inserts recurring rules without duplicating identical rules on repeated
-runs.
+Загрузчик повторно использует пользователя, обновляет финансовый профиль и не
+создает дубликаты идентичных правил. Тип бизнеса задается отдельно для каждого
+пользователя, например `osek_patur` или `osek_murshe`.
 
-Check the loaded data in PostgreSQL:
+Приватные `.env`, `config/private/*.yaml` и финансовые документы нельзя
+коммитить.
 
-```bash
-docker compose exec db psql -U ai_accountant -d ai_accountant
+## Команды текущей версии
+
+```text
+/start
+/help
+/profile
+/balance
+
+/income amount description
+/expense amount description
+/last
+/ai_parse text
+
+/recurring
+/generate_recurring
+/obligations
+/obligation_payments
+/pay_obligation rule_id amount period_start period_end description
+
+/documents
+/document document_id
+/ocr_document document_id
+/parse_document document_id
+/link_document document_id transaction_id
+/unlink_document document_id
 ```
 
-```sql
-select id, user_id, opening_balance, currency, opening_balance_date
-from financial_profiles;
+Пример ручной оплаты VAT-обязательства за период:
 
-select id, user_id, type, amount, currency, category, description,
-       frequency, day_of_month, active
-from recurring_rules
-order by user_id, type, day_of_month;
+```text
+/pay_obligation 5 1200 2026-05-01 2026-06-30 VAT payment May-June
 ```
-# ai_accountant_bot
+
+`/generate_recurring` создает транзакции только для `auto_pay`.
+`manual_pay` оплачивается через `/pay_obligation`, а `reserve_only` не создает
+реального списания.
+
+## Важные ограничения
+
+- `/income` и `/expense` сохраняют ручную операцию сразу;
+- подтверждение Save/Cancel применяется к AI- и OCR-операциям;
+- текущий `/balance` считает начальный баланс плюс доходы минус расходы;
+- налоговые поля уже хранятся, но интерфейс их ручной классификации еще не
+  реализован;
+- защита от повторной оплаты периода сейчас реализована на уровне
+  `/pay_obligation`, а не уникальным ограничением PostgreSQL;
+- налоговые суммы и доступный бюджет пока не рассчитываются;
+- все будущие налоговые результаты должны показываться как estimates, а не как
+  официальная декларация или профессиональная консультация.

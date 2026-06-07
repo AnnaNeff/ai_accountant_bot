@@ -1,886 +1,427 @@
 # AI-Accountant: описание проекта
 
-## 1. Назначение проекта
+## 1. Назначение
 
-AI-Accountant — это личный бухгалтерский помощник в Telegram для учета доходов, расходов, документов, налоговых резервов и свободного бюджета.
+AI-Accountant — личный Telegram-помощник для учета доходов, расходов,
+финансовых документов и обязательств. Целевая версия также рассчитывает
+предварительные налоговые резервы и отвечает на вопрос, сколько денег можно
+безопасно потратить.
 
-Telegram в проекте используется только как интерфейс. Основные бухгалтерские данные, история операций, документы, настройки налогов и отчеты должны храниться в отдельной базе данных и файловом хранилище.
+Telegram используется только как интерфейс. Источником данных являются
+PostgreSQL и приватное файловое хранилище.
 
-Главный принцип системы:
+Проект не является системой официальной подачи отчетности и не заменяет
+бухгалтера. Налоговые результаты должны называться estimates или резервами и
+сопровождаться понятными ограничениями.
 
-- AI понимает входящие сообщения и документы.
-- Детерминированный код считает деньги, налоги и бюджет.
-- Пользователь подтверждает спорные или важные решения.
-
-AI не должен самостоятельно принимать финальные бухгалтерские или налоговые решения без проверки и подтверждения.
-
-## 2. Что должен уметь бот
-
-Бот должен принимать от пользователя:
-
-- текстовые сообщения, например: "получила 1200 шекелей от клиента за консультацию";
-- фотографии чеков, счетов и квитанций;
-- команды, например: "отчет за апрель", "сколько можно потратить на этой неделе".
-
-Система должна определять:
-
-- доход это или расход;
-- сумму, валюту и дату;
-- категорию операции;
-- наличие VAT / מע"מ;
-- можно ли учитывать операцию как бизнес-расход;
-- нужна ли ручная проверка.
-
-После подтверждения пользователя бот должен сохранять операцию в базу и обновлять:
-
-- доходы;
-- расходы;
-- прибыль;
-- VAT к оплате или возврату;
-- примерный резерв на подоходный налог;
-- примерный резерв на Bituach Leumi;
-- свободные деньги с учетом будущих обязательств.
-
-## 3. Архитектурный подход
-
-Неправильный подход:
-
-```text
-Пользователь -> Telegram -> AI -> AI сам решил налог -> записал результат
-```
-
-Так делать нельзя, потому что AI может ошибиться, перепутать VAT, неверно классифицировать расход или додумать отсутствующие детали.
-
-Правильный поток:
+## 2. Основной принцип
 
 ```text
 Пользователь
   -> Telegram Bot
-  -> AI Extractor
-  -> Validation Layer
-  -> User Confirmation
-  -> Accounting Engine
-  -> Tax Engine
-  -> Budget Engine
-  -> Reports Engine
-```
-
-AI Extractor отвечает только за извлечение структурированных данных из текста или изображения. Финальные расчеты выполняют обычные программные модули по явным правилам.
-
-## 4. Хранение данных
-
-Основное хранилище: PostgreSQL.
-
-PostgreSQL подходит для бухгалтерии, потому что данные структурированные:
-
-- операции;
-- суммы;
-- даты;
-- категории;
-- налоги;
-- отчеты;
-- связи между документами и транзакциями;
-- история изменений.
-
-Telegram не должен быть местом хранения бухгалтерии. Он может хранить `file_id` фотографии, но не должен быть единственным архивом документов.
-
-MongoDB не является предпочтительным вариантом для этого проекта, потому что финансовые отчеты, связи, расчеты по периодам и консистентность данных удобнее и надежнее реализуются в SQL-базе.
-
-AI-результаты можно хранить в JSON-полях PostgreSQL, если нужна гибкость.
-
-## 5. Хранилище документов
-
-Для фото чеков и счетов можно использовать:
-
-- локальное шифрованное хранилище;
-- S3-compatible storage;
-- private VPS volume.
-
-Для личной версии проекта достаточно локального каталога:
-
-```text
-/data/private/documents/
-```
-
-В базе данных нужно хранить:
-
-- путь к файлу;
-- Telegram `file_id`;
-- hash файла;
-- дату загрузки;
-- связь с операцией;
-- OCR-текст;
-- JSON-результат AI-извлечения.
-
-## 6. Безопасность
-
-Так как бот работает с личными финансовыми данными, безопасность нужно заложить с самого начала.
-
-Минимальные требования:
-
-- доступ только по allowlist Telegram `user_id`;
-- секреты только в `.env`;
-- PostgreSQL не должен быть открыт в интернет;
-- база доступна только внутри Docker network или приватной сети;
-- регулярные шифрованные бэкапы;
-- audit log для всех изменений;
-- soft delete вместо физического удаления;
-- AI получает только конкретное сообщение или документ, а не всю финансовую историю.
-
-Пример ограничения доступа:
-
-```env
-ALLOWED_TELEGRAM_USER_IDS=123456789
-```
-
-Нельзя хранить в коде:
-
-- Telegram bot token;
-- Groq API key;
-- пароли к базе;
-- ключи шифрования.
-
-Пример имени бэкапа:
-
-```text
-backup_2026-05-08.sql.gz.enc
-```
-
-## 7. Подтверждение операций
-
-Даже если AI уверен в результате, бот должен показывать пользователю карточку подтверждения.
-
-Пример:
-
-```text
-Я понял так:
-
-Тип: расход
-Сумма: 86.40 ₪
-Категория: еда / бизнес-встреча
-VAT: есть
-Дата: 08.05.2026
-
-Сохранить?
-[Да] [Изменить] [Отмена]
-```
-
-Операция становится частью ledger только после подтверждения.
-
-## 8. Налоговая логика для Израиля
-
-Налоговая логика должна быть отдельным модулем и конфигурационным слоем. Бот не должен "придумывать закон" или хранить правила только в prompt для LLM.
-
-Для `עוסק מורשה` система должна учитывать минимум:
-
-- VAT / מע"מ;
-- авансы по подоходному налогу;
-- Bituach Leumi;
-- требования по invoice allocation numbers для крупных B2B-счетов;
-- календарь налоговых платежей.
-
-VAT-модуль должен считать:
-
-- VAT с доходов;
-- входящий VAT с расходов;
-- разницу к оплате или возврату;
-- отчетный период.
-
-Bituach Leumi должен быть отдельным расчетным модулем, потому что расчет для self-employed зависит от годовой налоговой оценки, порогов, ставок и специальных корректировок.
-
-Требования по allocation number для tax invoice должны храниться в конфиге, потому что пороги меняются по датам.
-
-## 9. Пример налогового конфига
-
-```yaml
-country: "IL"
-year: 2026
-
-vat:
-  standard_rate: 0.18
-  reporting_period: "monthly"
-
-bituach_leumi:
-  reduced_threshold_monthly: 7703
-  max_income_monthly: 51910
-  reduced_rate_total: 0.077
-  full_rate_total: 0.18
-
-income_tax:
-  advance_percent_default: 0.10
-  mode: "advance_percent"
-
-invoice_allocation:
-  thresholds:
-    - from: "2025-01-01"
-      amount_before_vat: 20000
-    - from: "2026-01-01"
-      amount_before_vat: 10000
-    - from: "2026-06-01"
-      amount_before_vat: 5000
-```
-
-Бот должен показывать пользователю, какой налоговый конфиг используется:
-
-```text
-Налоговые параметры: israel_2026.yaml
-Последняя проверка: 2026-05-08
-```
-
-## 10. Расчет свободных денег
-
-Вопрос "сколько можно потратить на этой неделе" должен считаться не как простой баланс минус расходы.
-
-Формула:
-
-```text
-Свободные деньги =
-текущий доступный баланс
-+ ожидаемые поступления до конца периода
-- регулярные списания до конца периода
-- обязательный резерв на VAT
-- резерв на подоходный налог
-- резерв на Bituach Leumi
-- уже запланированные расходы
-- минимальный safety buffer
-```
-
-Пример ответа:
-
-```text
-На эту неделю свободно примерно: 1,240 ₪
-
-Расчет:
-Баланс сейчас: 5,800 ₪
-Ожидаемые поступления: +2,000 ₪
-Регулярные списания: -1,100 ₪
-Резерв на VAT: -1,050 ₪
-Резерв на Bituach Leumi: -620 ₪
-Резерв на подоходный налог: -1,290 ₪
-Буфер: -500 ₪
-
-Итого можно безопасно потратить: 1,240 ₪
-```
-
-Если часть налогов считается как прогноз, бот должен использовать формулировку "примерно".
-
-## 11. Основные модули
-
-```text
-Telegram Bot
-  -> Input Processing
-  -> AI / OCR Extraction
+  -> AI/OCR Extraction
   -> Validation
-  -> Transaction Confirmation
-  -> Accounting Ledger
+  -> User Confirmation
+  -> Accounting and Obligation Services
   -> Tax Engine
   -> Budget Engine
   -> Reports
 ```
 
-### Telegram Bot
+- AI извлекает структуру из свободного текста и OCR.
+- Детерминированный код валидирует и считает деньги.
+- Пользователь подтверждает AI- и OCR-операции.
+- Спорная налоговая классификация не применяется без пользователя.
+- LLM не хранит налоговые правила и не выполняет финальный расчет сам.
 
-Технология: `aiogram 3`.
+## 3. Текущее состояние
 
-Задачи:
+На 7 июня 2026 года реализованы этапы 1–8D.
 
-- принимать текст;
-- принимать фото;
-- показывать кнопки;
-- задавать уточняющие вопросы;
-- отправлять отчеты;
-- ограничивать доступ по Telegram `user_id`.
+### Учет
 
-### AI Extractor
+- пользователи с доступом по Telegram allowlist;
+- ручные income/expense-транзакции;
+- список последних транзакций;
+- финансовый профиль и начальный баланс;
+- текущий баланс: opening balance + income - expense;
+- bootstrap приватных стартовых данных;
+- ежемесячные recurring rules.
 
-Задачи:
+### AI и подтверждение
 
-- понимать текст;
-- распознавать фото;
-- возвращать структурированный JSON.
+- извлечение транзакции из текста через Groq;
+- валидация структурированного результата;
+- preview операции;
+- кнопки Save/Cancel;
+- сохранение только после подтверждения AI-preview.
 
-Пример результата:
+Ручные `/income` и `/expense` в текущей версии сохраняются сразу. Save/Cancel
+реализован для AI- и OCR-потоков.
 
-```json
-{
-  "transaction_type": "expense",
-  "amount_total": 86.40,
-  "currency": "ILS",
-  "date": "2026-05-08",
-  "vendor_name": "Super-Pharm",
-  "category": "office_supplies",
-  "vat_included": true,
-  "vat_amount": 13.18,
-  "business_use_percent": 100,
-  "confidence": 0.87,
-  "needs_user_confirmation": true
-}
-```
+### Документы и OCR
 
-### Validation Layer
+- прием фото из Telegram;
+- локальное приватное хранение;
+- Telegram `file_id`, путь, SHA-256 hash, MIME type и размер;
+- OCR-текст, статус, ошибка и время обработки;
+- ручная связь и отвязка документа от транзакции;
+- AI-preview по OCR-тексту;
+- создание и привязка транзакции после Save;
+- запрет повторного создания транзакции из уже связанного документа.
 
-Проверяет:
-
-- сумма не пустая;
-- дата корректная;
-- валюта известна;
-- тип операции понятен;
-- VAT не больше суммы;
-- категория существует;
-- confidence не слишком низкий.
-
-### Accounting Engine
-
-Отвечает за запись операций в ledger.
-
-После подтверждения операция становится бухгалтерской записью. Старые операции лучше не менять напрямую: изменения должны фиксироваться через историю или корректирующие операции.
-
-### Tax Engine
-
-Считает:
-
-- VAT output;
-- VAT input;
-- VAT payable;
-- taxable profit;
-- estimated income tax reserve;
-- estimated Bituach Leumi reserve;
-- tax payment calendar.
-
-### Budget Engine
-
-Считает:
-
-- свободные деньги;
-- план расходов;
-- обязательные резервы;
-- регулярные платежи;
-- риск кассового разрыва.
-
-### Reports Engine
-
-Формирует:
-
-- отчет за месяц;
-- отчет за год;
-- отчет по VAT;
-- отчет по категориям;
-- cashflow;
-- список неподтвержденных операций;
-- список операций без документов.
-
-## 12. Стартовые данные и регулярные платежи
-
-Реальные личные данные не должны лежать в git.
-
-В репозитории должен быть шаблон:
+Текущий flow:
 
 ```text
-config/bootstrap.example.yaml
+Фото -> Document -> OCR -> AI parse -> preview -> Save/Cancel
+     -> Transaction + linked document
 ```
 
-Реальный файл должен быть приватным и добавленным в `.gitignore`:
+### Business profile и налоговые поля
+
+`FinancialProfile` хранит:
 
 ```text
-config/private/bootstrap.yaml
+business_type
+tax_country
+default_vat_rate
+income_tax_reserve_percent
+bituach_leumi_reserve_percent
+```
+
+Тип бизнеса задается для каждого пользователя отдельно. Например, один
+пользователь может иметь `osek_patur`, другой — `osek_murshe`.
+
+`Transaction` уже содержит:
+
+```text
+amount_total
+amount_net
+vat_amount
+vat_rate
+vat_included
+vat_relevant
+business_use_percent
+tax_deductible
+tax_category
+balance_impact_type
+```
+
+Эти поля пока являются основой данных: интерфейс ручного просмотра и изменения
+налоговой классификации запланирован на этап 8F.
+
+### Обязательства
+
+Recurring rule различает поведение:
+
+```text
+auto_pay
+manual_pay
+reserve_only
+```
+
+И тип обязательства:
+
+```text
+regular
+loan
+rent
+subscription
+vat
+income_tax
+bituach_leumi
+other_tax
+other
+```
+
+Поведение:
+
+- `auto_pay` создает транзакцию через `/generate_recurring`;
+- `manual_pay` создает транзакцию только через `/pay_obligation`;
+- `reserve_only` используется для планирования и не создает реального
+  списания.
+
+`ObligationPayment` связывает правило, транзакцию, сумму и оплаченный период.
+Команда `/pay_obligation` проверяет существующую paid-запись и блокирует
+повторную оплату того же правила и точного периода. Уникального ограничения БД
+для этого сочетания пока нет.
+
+## 4. Ближайшая цель
+
+Следующий этап — expected obligation periods и
+`/obligation_status`.
+
+Для правил обязательств нужно описать:
+
+- длину периода: 1, 2 или 3 месяца;
+- due day;
+- смещение due month относительно конца периода;
+- начало и окончание действия.
+
+Система должна строить ожидаемые периоды, сопоставлять их с
+`ObligationPayment` и показывать:
+
+```text
+paid
+unpaid
+overdue
 ```
 
 Пример:
 
-```yaml
-owner:
-  name: "Anna"
-  country: "Israel"
-  business_type: "osek_murshe"
-  currency: "ILS"
-
-business:
-  vat_registered: true
-  vat_reporting_period: "monthly"
-  income_tax_advance_percent: 10
-  bituach_leumi_estimation_mode: "projected_profit"
-
-opening_balances:
-  bank_main:
-    amount: 12000
-    currency: "ILS"
-  cash:
-    amount: 500
-    currency: "ILS"
-
-regular_income:
-  - name: "Client retainer"
-    amount: 3000
-    currency: "ILS"
-    frequency: "monthly"
-    day_of_month: 10
-    category: "services_income"
-
-regular_expenses:
-  - name: "Rent"
-    amount: 4500
-    currency: "ILS"
-    frequency: "monthly"
-    day_of_month: 1
-    category: "personal_rent"
-    business_use_percent: 0
-
-  - name: "Loan payment"
-    amount: 1200
-    currency: "ILS"
-    frequency: "monthly"
-    day_of_month: 15
-    category: "loan_payment"
-    business_use_percent: 0
-
-safety_buffer:
-  weekly_minimum: 500
-  monthly_minimum: 2000
+```text
+VAT | 2026-05-01..2026-06-30 | unpaid | due 2026-07-15
 ```
 
-## 13. Предлагаемая структура проекта
+На этом этапе суммы налогов не рассчитываются.
+
+## 5. Целевая последовательность
 
 ```text
-ai_accountant_bot/
-├── app/
-│   ├── main.py
-│   ├── bot/
-│   │   ├── dispatcher.py
-│   │   ├── middlewares.py
-│   │   ├── keyboards.py
-│   │   └── handlers/
-│   │       ├── start.py
-│   │       ├── text_input.py
-│   │       ├── photo_input.py
-│   │       ├── confirmation.py
-│   │       ├── reports.py
-│   │       └── budget.py
-│   ├── core/
-│   │   ├── config.py
-│   │   ├── security.py
-│   │   ├── logging.py
-│   │   └── exceptions.py
-│   ├── db/
-│   │   ├── session.py
-│   │   ├── base.py
-│   │   └── repositories/
-│   │       ├── transactions.py
-│   │       ├── documents.py
-│   │       ├── recurring.py
-│   │       ├── tax.py
-│   │       └── audit.py
-│   ├── models/
-│   │   ├── user.py
-│   │   ├── business_profile.py
-│   │   ├── transaction.py
-│   │   ├── document.py
-│   │   ├── category.py
-│   │   ├── recurring_rule.py
-│   │   ├── tax_period.py
-│   │   └── audit_log.py
-│   ├── schemas/
-│   │   ├── transaction.py
-│   │   ├── extraction.py
-│   │   ├── report.py
-│   │   ├── budget.py
-│   │   └── tax.py
-│   ├── services/
-│   │   ├── input_service.py
-│   │   ├── transaction_service.py
-│   │   ├── document_service.py
-│   │   ├── recurring_service.py
-│   │   ├── report_service.py
-│   │   ├── budget_service.py
-│   │   └── notification_service.py
-│   ├── ai/
-│   │   ├── llm_client.py
-│   │   ├── ocr_service.py
-│   │   ├── extraction_prompts.py
-│   │   ├── transaction_classifier.py
-│   │   └── confidence.py
-│   ├── tax/
-│   │   ├── engine.py
-│   │   └── israel/
-│   │       ├── vat.py
-│   │       ├── income_tax.py
-│   │       ├── bituach_leumi.py
-│   │       ├── deductible_expenses.py
-│   │       ├── allocation_numbers.py
-│   │       └── rules_loader.py
-│   ├── storage/
-│   │   ├── file_storage.py
-│   │   ├── encrypted_storage.py
-│   │   └── backup_service.py
-│   └── jobs/
-│       ├── scheduler.py
-│       ├── recurring_transactions_job.py
-│       ├── tax_reminders_job.py
-│       └── backup_job.py
-├── config/
-│   ├── app.example.yaml
-│   ├── categories.yaml
-│   ├── tax_rules/
-│   │   └── israel_2026.yaml
-│   └── private/
-│       ├── bootstrap.yaml
-│       └── secrets.note.txt
-├── migrations/
-│   └── alembic/
-├── tests/
-│   ├── test_transaction_extraction.py
-│   ├── test_vat_calculation.py
-│   ├── test_bituach_leumi.py
-│   ├── test_budget.py
-│   └── test_reports.py
-├── scripts/
-│   ├── init_db.py
-│   ├── load_bootstrap.py
-│   ├── create_backup.py
-│   └── restore_backup.py
-├── docs/
-│   ├── architecture.md
-│   ├── tax_logic.md
-│   ├── data_model.md
-│   └── telegram_flows.md
-├── docker-compose.yml
-├── Dockerfile
-├── pyproject.toml
-├── .env
-├── .gitignore
-└── README.md
+1. Expected obligation periods and statuses
+2. Manual transaction tax classification
+3. VAT and tax reserve estimates
+4. Personal reconciliation and available-to-spend budget
+5. AI advisors and rule creation
+6. Reports
+7. Hardening
 ```
 
-## 14. Основные таблицы базы
+Ручная налоговая классификация должна появиться раньше VAT engine: отчет не
+будет надежным, если `vat_relevant`, deductible status и business use у
+транзакций не проверены.
 
-### users
+## 6. Целевая налоговая логика
 
-- `id`
-- `telegram_user_id`
-- `name`
-- `created_at`
+### VAT
 
-### business_profiles
-
-- `id`
-- `user_id`
-- `business_type`
-- `country`
-- `currency`
-- `vat_registered`
-- `vat_reporting_period`
-- `income_tax_advance_percent`
-- `created_at`
-
-### transactions
-
-- `id`
-- `user_id`
-- `type`: `income`, `expense`, `tax_payment`, `transfer`, `personal`
-- `date`
-- `amount_total`
-- `currency`
-- `amount_net`
-- `vat_amount`
-- `category_id`
-- `counterparty_name`
-- `description`
-- `business_use_percent`
-- `deductible_status`
-- `source`: `text`, `photo`, `manual`, `recurring`
-- `status`: `draft`, `confirmed`, `corrected`, `deleted`
-- `created_at`
-- `updated_at`
-
-### documents
-
-- `id`
-- `transaction_id`
-- `telegram_file_id`
-- `local_path`
-- `file_hash`
-- `ocr_text`
-- `ai_extracted_json`
-- `created_at`
-
-### recurring_rules
-
-- `id`
-- `user_id`
-- `name`
-- `type`
-- `amount`
-- `currency`
-- `frequency`
-- `day_of_month`
-- `category_id`
-- `business_use_percent`
-- `active`
-
-### tax_periods
-
-- `id`
-- `user_id`
-- `period_start`
-- `period_end`
-- `vat_output`
-- `vat_input`
-- `vat_payable`
-- `income_tax_reserve`
-- `bituach_leumi_reserve`
-- `status`
-
-### audit_logs
-
-- `id`
-- `entity_type`
-- `entity_id`
-- `action`
-- `old_value`
-- `new_value`
-- `created_at`
-
-## 15. Сценарий текстового ввода
-
-Пользователь пишет:
+Для `osek_murshe`:
 
 ```text
-получила 1500 шекелей от клиента за консультацию
+VAT output from classified income
+- deductible input VAT from business expenses
+= estimated VAT payable
 ```
 
-Поток:
+Для `osek_patur` обычный VAT payable report должен быть недоступен или явно
+помечен как неприменимый к профилю.
 
-1. Бот передает текст в AI Extractor.
-2. AI возвращает JSON.
-3. Validation Layer проверяет поля.
-4. Бот показывает пользователю карточку подтверждения.
-5. Пользователь нажимает "Да".
-6. Операция сохраняется.
-7. Tax Engine обновляет прогноз по налогам.
-8. Budget Engine обновляет доступный бюджет.
+VAT engine должен учитывать период, `business_use_percent`,
+`tax_deductible` и согласованность total/net/VAT.
 
-Пример подтверждения:
+### Income tax reserve
+
+Первый вариант:
 
 ```text
-Я понял так:
-
-Доход: 1,500 ₪
-Категория: услуги
-VAT: включить
-Дата: сегодня
-
-Сохранить?
+taxable business profit * income_tax_reserve_percent
 ```
 
-## 16. Сценарий с фото документа
+Это резерв для планирования, а не расчет годовой декларации.
 
-Пользователь отправляет чек.
+### Bituach Leumi reserve
 
-Поток:
-
-1. Бот скачивает фото.
-2. Сохраняет файл.
-3. Считает hash файла.
-4. Запускает OCR.
-5. Передает OCR-текст и/или изображение в AI Extractor.
-6. Получает структурированные данные.
-7. Показывает пользователю подтверждение.
-8. После подтверждения записывает операцию.
-
-Если AI не уверен:
+Первый вариант:
 
 ```text
-Я не уверен, это личная или бизнес-трата.
-
-Сумма: 184.90 ₪
-Магазин: KSP
-Возможная категория: техника / оборудование
-
-Это бизнес-расход?
-[Да] [Нет] [Частично]
+taxable business profit * bituach_leumi_reserve_percent
 ```
 
-## 17. Сценарий отчета
+Позже простой процент может быть заменен отдельным tiered calculation.
 
-Пользователь пишет:
+### Tax summary
+
+Целевой `/tax_summary` объединяет:
+
+- VAT estimate;
+- income tax reserve;
+- Bituach Leumi reserve;
+- total estimated reserve;
+- paid/unpaid/overdue obligations.
+
+## 7. Personal balance и свободные деньги
+
+Бот не обязан получать каждый личный чек. Планируется reconciliation по
+изменению фактического банковского баланса:
 
 ```text
-отчет за апрель
+previous balance + income - new balance = personal spending
 ```
 
-Бот отвечает:
+Результат сохраняется агрегированной expense-транзакцией с
+`balance_impact_type=personal`.
+
+Целевой `/available`:
 
 ```text
-Отчет за апрель 2026
-
-Доходы: 18,500 ₪
-Расходы: 6,300 ₪
-Прибыль до налогов: 12,200 ₪
-
-VAT с доходов: 2,823 ₪
-Входящий VAT: 641 ₪
-VAT к оплате: 2,182 ₪
-
-Резерв на подоходный налог: 1,800 ₪
-Резерв на Bituach Leumi: 1,050 ₪
-
-Ориентировочно после резервов: 7,168 ₪
+current balance
+- unpaid/overdue obligations
+- tax reserves
+- upcoming auto-pay
+- safety buffer
+= available to spend
 ```
 
-## 18. План разработки
+Расчет должен исключать двойной учет одной суммы, например одновременное
+вычитание фактической налоговой оплаты и того же резерва.
 
-Подробная рабочая дорожная карта вынесена в отдельный документ: [development_plan.md](development_plan.md).
+## 8. AI business expense advisor
 
-### Этап 1. Каркас проекта
+Целевой flow:
 
-Цель: запустить пустого Telegram-бота.
+```text
+/can_deduct оплатила электричество, работаю из дома
+```
 
-Сделать:
+AI может:
 
-- структуру проекта;
-- `.env`;
-- Docker;
-- подключение к PostgreSQL;
-- базовые команды `/start`, `/help`;
-- проверку Telegram `user_id`.
+- объяснить вероятную классификацию;
+- предложить `tax_deductible`;
+- предложить `business_use_percent`;
+- подготовить preview транзакции.
 
-Результат: бот работает, но пока ничего не считает.
+AI не должен автоматически принимать окончательное налоговое решение. Ответ
+должен указывать, что спорную классификацию следует подтвердить с бухгалтером.
 
-### Этап 2. База данных и ручной ввод операций
+## 9. Хранение данных
 
-Цель: сохранять операции без AI.
+Основная база — PostgreSQL. Она хранит пользователей, финансовые профили,
+транзакции, recurring rules, документы и оплаты обязательств.
 
-Сделать:
+Основные существующие сущности:
 
-- таблицы `users`, `transactions`, `categories`;
-- команду добавления дохода;
-- команду добавления расхода;
-- подтверждение операции;
-- просмотр последних операций.
+### `users`
 
-Результат: можно вручную вести учет через Telegram.
+- Telegram identity;
+- имя;
+- timestamps.
 
-### Этап 3. Стартовые данные и регулярные платежи
+### `financial_profiles`
 
-Цель: учитывать кредиты, аренду, подписки и регулярные доходы.
+- opening balance и дата;
+- currency;
+- business type и tax country;
+- VAT и reserve defaults.
 
-Сделать:
+### `transactions`
 
-- `bootstrap.yaml`;
-- загрузчик стартовых данных;
-- recurring rules;
-- job, который создает регулярные операции;
-- команду "регулярные платежи".
+- income/expense;
+- amount, currency и date;
+- category и description;
+- source и status;
+- VAT, deductible и business-use поля;
+- balance impact type.
 
-Результат: бот понимает не только ручные операции, но и будущие обязательства.
+### `recurring_rules`
 
-### Этап 4. AI-распознавание текста
+- amount, frequency и day of month;
+- start/end date;
+- payment behavior;
+- obligation type;
+- признак влияния на баланс;
+- дата последней генерации.
 
-Цель: пользователь пишет обычной фразой, бот сам предлагает операцию.
+### `obligation_payments`
 
-Сделать:
+- recurring rule;
+- transaction;
+- period start/end;
+- amount, currency и status;
+- notes.
 
-- LLM client;
-- prompt для извлечения JSON;
-- validation;
-- confidence score;
-- подтверждение перед сохранением.
+### `documents`
 
-Результат: фраза "Заплатила 120 шекелей за интернет" превращается в предложенную расходную операцию.
+- Telegram file id;
+- local path и hash;
+- MIME type и размер;
+- OCR data и status;
+- optional transaction link.
 
-### Этап 5. Фото чеков и OCR
+Будущие сущности должны добавляться только при появлении реальной логики:
+ожидаемые периоды обязательств, audit log и, при необходимости, сохраненные
+налоговые snapshots.
 
-Цель: принимать фото документов.
+## 10. Безопасность
 
-Сделать:
+Уже применяется:
 
-- загрузку фото из Telegram;
-- локальное хранение;
-- OCR;
-- AI extraction из OCR-текста;
-- связь документа с операцией.
+- Telegram allowlist;
+- секреты в `.env`;
+- приватный bootstrap вне git;
+- запуск PostgreSQL через Docker Compose;
+- локальный приватный каталог документов;
+- разделение данных по `user_id`;
+- передача AI только конкретного текста или OCR-содержимого.
 
-Результат: пользователь отправляет чек, бот предлагает готовую операцию.
+Текущий `docker-compose.yml` публикует PostgreSQL на порту `5432` хоста. Для
+развертывания вне локальной машины этот порт нужно закрыть или ограничить
+сетевыми правилами.
 
-### Этап 6. Базовый налоговый модуль
+Запланировано:
 
-Цель: считать предварительные налоговые резервы.
-
-Сделать:
-
-- VAT calculator;
-- income tax reserve calculator;
-- Bituach Leumi estimator;
-- tax period model;
-- отчет "налоги сейчас".
-
-Результат: бот показывает, сколько примерно надо отложить.
-
-### Этап 7. Бюджетный модуль
-
-Цель: отвечать на вопросы вроде "сколько можно потратить".
-
-Сделать:
-
-- расчет текущего свободного баланса;
-- учет будущих регулярных платежей;
-- учет налоговых резервов;
-- недельный и месячный бюджет;
-- предупреждения о кассовом разрыве.
-
-Результат: бот дает практическую цифру, сколько можно безопасно потратить.
-
-### Этап 8. Отчеты
-
-Цель: получать понятные отчеты.
-
-Сделать:
-
-- отчет за месяц;
-- отчет по категориям;
-- отчет по VAT;
-- отчет по прибыли;
-- экспорт CSV/XLSX;
-- список операций без документов.
-
-Результат: бот становится полезным как личный бухгалтерский помощник.
-
-### Этап 9. Защита, бэкапы, аудит
-
-Цель: не потерять данные и не раскрыть их.
-
-Сделать:
-
-- encrypted backups;
-- restore script;
+- encrypted backups и restore-проверки;
 - audit log;
 - soft delete;
-- ограничение доступа;
-- логирование ошибок без персональных данных.
+- диагностические команды;
+- редактирование без потери истории;
+- исключение персональных данных из логов.
 
-Результат: проект можно безопасно использовать лично.
+Нельзя хранить в git:
 
-## 19. MVP
+- Telegram bot token;
+- Groq API key;
+- пароли базы;
+- приватный bootstrap;
+- финансовые документы;
+- ключи шифрования.
 
-Рекомендуемый порядок MVP:
+## 11. Техническая архитектура
 
-1. Telegram bot.
-2. PostgreSQL.
-3. Ручной ввод доходов и расходов.
-4. Стартовые данные и регулярные платежи.
-5. Простой отчет за месяц.
-6. Простой расчет свободных денег.
-7. AI для текста.
-8. Фото чеков.
-9. Более сложные налоги.
+Текущие слои:
 
-Такой порядок позволит быстрее получить работающий продукт и не застрять на сложной архитектуре до появления базовой пользы.
+```text
+app/bot          Telegram handlers, middleware, keyboards, FSM
+app/ai           Groq client, prompts, transaction extraction
+app/ocr          Tesseract OCR service
+app/services     accounting, balance, recurring, obligations, documents
+app/models       SQLAlchemy models
+app/schemas      Pydantic input/output validation
+app/storage      private file storage
+app/db           async SQLAlchemy session and metadata
+migrations       Alembic migrations
+tests            unit and handler tests
+```
 
-## 20. Итоговая концепция
+Целевые дополнительные слои:
 
-AI-Accountant должен быть не "магическим AI-бухгалтером", а системой из трех уровней:
+```text
+app/tax          deterministic VAT and reserve calculations
+app/budget       reconciliation and available-to-spend calculations
+app/reports      reports and exports
+app/audit        immutable change history
+```
 
-- AI извлекает и предлагает структуру данных.
-- Код считает учет, налоги и бюджет по явным правилам.
-- Пользователь подтверждает спорные решения.
+Новые модули должны опираться на существующие сервисы и схемы, а налоговые
+правила — быть явными, версионируемыми и тестируемыми.
 
-Такой подход снижает риск ошибок и делает проект пригодным для реального личного использования.
+## 12. Границы продукта
+
+AI-Accountant должен:
+
+- вести личный ledger;
+- хранить подтвержденные документы;
+- показывать состояние обязательств;
+- давать прозрачные предварительные расчеты;
+- объяснять, из каких сумм получен результат.
+
+AI-Accountant не должен:
+
+- подавать декларации от имени пользователя;
+- гарантировать юридическую корректность AI-совета;
+- скрыто менять налоговые поля;
+- считать неизвестные данные как нулевые без предупреждения;
+- смешивать данные разных пользователей;
+- использовать Telegram как единственный архив.
+
+Подробная последовательность реализации находится в
+[`development_plan.md`](development_plan.md).

@@ -27,6 +27,17 @@ class RecurringRule(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     frequency: Mapped[str] = mapped_column(String(20), nullable=False)
     day_of_month: Mapped[int] = mapped_column(nullable=False, index=True)
+    period_months: Mapped[int] = mapped_column(
+        default=1,
+        server_default="1",
+        nullable=False,
+    )
+    due_day: Mapped[int | None] = mapped_column(nullable=True)
+    due_month_offset: Mapped[int] = mapped_column(
+        default=0,
+        server_default="0",
+        nullable=False,
+    )
     payment_behavior: Mapped[str] = mapped_column(
         String(20),
         server_default="auto_pay",
