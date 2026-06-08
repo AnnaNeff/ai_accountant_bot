@@ -29,6 +29,7 @@ async def handle_help(message: Message) -> None:
         "/expense amount description\n"
         "/transaction transaction_id\n"
         "/set_transaction_tax transaction_id field value\n"
+        "/vat_report period_start period_end\n"
         "/ai_parse text\n"
         "/last"
     )
