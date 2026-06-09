@@ -18,3 +18,4 @@ def test_help_includes_vat_report_command() -> None:
 
     assert "/vat_report period_start period_end" in message.answers[0]
     assert "/income_tax_reserve period_start period_end" in message.answers[0]
+    assert "/bituach_leumi_reserve period_start period_end" in message.answers[0]

@@ -3,6 +3,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from app.bot.handlers.ai_parse import router as ai_parse_router
 from app.bot.handlers.balance import router as balance_router
+from app.bot.handlers.bituach_leumi import router as bituach_leumi_router
 from app.bot.handlers.documents import router as documents_router
 from app.bot.handlers.help import router as help_router
 from app.bot.handlers.income_tax import router as income_tax_router
@@ -27,6 +28,7 @@ def create_bot_and_dispatcher(settings: Settings) -> tuple[Bot, Dispatcher]:
     dispatcher.include_router(income_tax_router)
     dispatcher.include_router(profile_router)
     dispatcher.include_router(balance_router)
+    dispatcher.include_router(bituach_leumi_router)
     dispatcher.include_router(recurring_router)
     dispatcher.include_router(transactions_router)
     dispatcher.include_router(vat_router)

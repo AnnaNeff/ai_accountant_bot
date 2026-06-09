@@ -31,6 +31,7 @@ async def handle_help(message: Message) -> None:
         "/set_transaction_tax transaction_id field value\n"
         "/vat_report period_start period_end\n"
         "/income_tax_reserve period_start period_end\n"
+        "/bituach_leumi_reserve period_start period_end\n"
         "/ai_parse text\n"
         "/last"
     )
