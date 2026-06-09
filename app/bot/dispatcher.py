@@ -5,6 +5,7 @@ from app.bot.handlers.ai_parse import router as ai_parse_router
 from app.bot.handlers.balance import router as balance_router
 from app.bot.handlers.documents import router as documents_router
 from app.bot.handlers.help import router as help_router
+from app.bot.handlers.income_tax import router as income_tax_router
 from app.bot.handlers.profile import router as profile_router
 from app.bot.handlers.recurring import router as recurring_router
 from app.bot.handlers.start import router as start_router
@@ -23,6 +24,7 @@ def create_bot_and_dispatcher(settings: Settings) -> tuple[Bot, Dispatcher]:
 
     dispatcher.include_router(start_router)
     dispatcher.include_router(help_router)
+    dispatcher.include_router(income_tax_router)
     dispatcher.include_router(profile_router)
     dispatcher.include_router(balance_router)
     dispatcher.include_router(recurring_router)
