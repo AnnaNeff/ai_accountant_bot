@@ -32,6 +32,7 @@ async def handle_help(message: Message) -> None:
         "/vat_report period_start period_end\n"
         "/income_tax_reserve period_start period_end\n"
         "/bituach_leumi_reserve period_start period_end\n"
+        "/tax_summary period_start period_end\n"
         "/ai_parse text\n"
         "/last"
     )

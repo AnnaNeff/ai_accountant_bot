@@ -10,6 +10,7 @@ from app.bot.handlers.income_tax import router as income_tax_router
 from app.bot.handlers.profile import router as profile_router
 from app.bot.handlers.recurring import router as recurring_router
 from app.bot.handlers.start import router as start_router
+from app.bot.handlers.tax_summary import router as tax_summary_router
 from app.bot.handlers.transactions import router as transactions_router
 from app.bot.handlers.vat import router as vat_router
 from app.bot.middlewares import AccessMiddleware
@@ -29,6 +30,7 @@ def create_bot_and_dispatcher(settings: Settings) -> tuple[Bot, Dispatcher]:
     dispatcher.include_router(profile_router)
     dispatcher.include_router(balance_router)
     dispatcher.include_router(bituach_leumi_router)
+    dispatcher.include_router(tax_summary_router)
     dispatcher.include_router(recurring_router)
     dispatcher.include_router(transactions_router)
     dispatcher.include_router(vat_router)
